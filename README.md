@@ -40,7 +40,6 @@ the 'Game' tab in Unity to set a fixed resolution to match the capture output.
 Just copy the [UnityCapture asset directory from the included sample project](UnityCaptureSample/Assets/UnityCapture)
 into your own project and then add the 'Unity Capture' behavior to your camera at the bottom.
 
-The camera setting 'Allow HDR' needs to be disabled for this to work.  
 You can also enable this behavior on a secondary camera that is not your main game camera by setting a target texture
 with your desired capture output resolution.
 
@@ -63,8 +62,8 @@ There are two settings for the 'Unity Capture' behavior.
   When Unity uses a rendering back-end other than Direct 3D 11.
 - Error: "Render resolution is too large to send to capture device"  
   When trying to send data with a resolution higher than the maximum supported 3840 x 2160
-- Error: "Render texture format is unsupported (make sure the main camera has 'Allow HDR' set to off)"  
-  When the rendered data/color format would require additional conversation (like HDR).
+- Error: "Render texture format is unsupported"  
+  When the rendered data/color format would require additional conversation.
 - Error: "Error while reading texture image data"  
   Generic error when the plugin is unable to access the rendered image pixel data.
 

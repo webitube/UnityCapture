@@ -50,13 +50,6 @@ public class UnityCapture : MonoBehaviour
             Debug.LogWarning("Application.runInBackground switched to enabled for capture streaming");
             Application.runInBackground = true;
         }
-
-        Camera camera = GetComponent<Camera>();
-        if (enabled && camera != null && camera.allowHDR)
-        {
-            Debug.LogWarning("AllowHDR switched to disabled on this Camera for capture streaming", camera);
-            camera.allowHDR = false;
-        }
     }
 
     void Start()

@@ -52,6 +52,7 @@ struct UnityCaptureInstance
 	SharedImageMemory* m_sender;
 	int m_width;
 	int m_height;
+	DXGI_FORMAT m_format;
 	ID3D11Texture2D* m_textureBuf;
 };
 
@@ -89,7 +90,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	d3dtex->GetDesc(&desc);
 	if (!desc.Width || !desc.Height) return RET_ERROR_READTEXTURE;
 
-	if (c->m_width != desc.Width || c->m_height != desc.Height)
+	if (c->m_width != desc.Width || c->m_height != desc.Height || c->m_format != desc.Format)
 	{
 		//Allocate a Texture2D resource which holds the texture with CPU memory access
 		D3D11_TEXTURE2D_DESC textureDesc;
@@ -108,12 +109,13 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 		g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->m_textureBuf);
 		c->m_width = desc.Width;
 		c->m_height = desc.Height;
+		c->m_format = desc.Format;
 	}
 
 	//Check texture format
 	int RGBABits = 0;
 	if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || desc.Format == DXGI_FORMAT_R8G8B8A8_UINT || desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) RGBABits = 8;
-	//if (desc.Format == DXGI_FORMAT_R16G16B16A16_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_UINT || desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) RGBABits = 16; //not supported for now
+	if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) RGBABits = 16;
 	if (!RGBABits) return RET_ERROR_TEXTUREFORMAT;
 
 	//Copy render texture to texture with CPU access and map the image data to RAM
@@ -124,19 +126,12 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	//Read image block without row gaps (where pitch is larger than width), also change from RGBA to BGR while at it
 	//We write the modified image back into the same memory because it always fits (3 instead of 4 pixels, guaranteed to have no gap at the row end)
 	//so there is no need for a temporary buffer to store the modified result before sending.
+	const unsigned width = desc.Width, height = desc.Height, dstPitch = width * 3, srcPitch = mapResource.RowPitch / (RGBABits / 2);
+	uint8_t *dst = (uint8_t*)mapResource.pData, *dstEnd = dst + height * dstPitch;
 	if (RGBABits == 8)
 	{
-		const unsigned width = desc.Width, height = desc.Height, dstPitch = width * 3, srcPitch = mapResource.RowPitch / 4;
-		unsigned char *dst = (unsigned char*)mapResource.pData, *dstEnd = dst + width * height * 3, *dstRowEnd;
-		uint32_t* src = (uint32_t*)mapResource.pData, *pxlSrc;
-		if (MirrorMode == MIRRORMODE_HORIZONTALLY)
-		{
-			//Handle horizontal flipping, it is a bit slower than without flipping
-			for (; dst != dstEnd; src += srcPitch)
-				for (dstRowEnd = dst + dstPitch, pxlSrc = src + width - 1; dst != dstRowEnd; dst += 3, pxlSrc--)
-					*(uint32_t*)dst = _byteswap_ulong(*pxlSrc) >> 8;
-		}
-		else if (srcPitch != width)
+		uint32_t *src = (uint32_t*)mapResource.pData;
+		if (srcPitch != width)
 		{
 			//Handle a case where the texture pitch does have a gap on the right side
 			for (; dst != dstEnd; dst += dstPitch, src += srcPitch)
@@ -146,7 +141,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 		else
 		{
 			//The fastest (implemented) way to convert from RGBA to BGR
-			uint32_t *srcEnd8 = src + ((width*height)&~7), *srcEnd1 = src + ((width*height));
+			uint32_t *srcEnd8 = src + ((width*height)&~7), *srcEnd1 = src + (width*height);
 			for (; src != srcEnd8; dst += 24, src += 8)
 			{
 				*(uint32_t*)(dst     ) = _byteswap_ulong(src[0]) >> 8;
@@ -162,16 +157,50 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 				*(uint32_t*)(dst) = _byteswap_ulong(*src) >> 8;
 		}
 	}
-	//else if (RGBABits == 16) //16 bit color downscaling (HDR to RGB) is not complete 
-	//{
-	//	unsigned char *dst = (unsigned char*)mapResource.pData; unsigned short *src = (unsigned short*)mapResource.pData;
-	//	for (int row = 0, rowEnd = desc.Height, srcgap = (mapResource.RowPitch - desc.Width * 8) / 2; row < rowEnd; row++, src += srcgap)
-	//		for (int i = 0; i < desc.Width; ++i, dst += 3, src += 4)
-	//			dst[0] = (unsigned char)(src[0]>>4), dst[1] = (unsigned char)(src[1]>>4), dst[2] = (unsigned char)(src[2]>>4);
-	//}
+	else if (RGBABits == 16)
+	{
+		//16 bit color downscaling (HDR (16 bit floats) to BGR)
+		float tmpf; uint16_t *tmpp, tmpr, tmpg, tmpb;
+		#define F16toU8(s) ((s) & 0x8000 ? 0 : (*(uint32_t*)&tmpf = ((s) << 13) + 0x38000000, tmpf < 1.0f ? (int)(tmpf * 255.99f) : 255))
+		#define RGBAF16toRGBU8(psrc) (tmpp = (uint16_t*)(psrc), tmpr = tmpp[0], tmpg = tmpp[1], tmpb = tmpp[2], (F16toU8(tmpr) << 16) | (F16toU8(tmpg) << 8) | (F16toU8(tmpb)))
+		uint64_t *src = (uint64_t*)mapResource.pData;
+		if (srcPitch != width)
+		{
+			//Handle a case where the texture pitch does have a gap on the right side
+			for (; dst != dstEnd; dst += dstPitch, src += srcPitch)
+				for (unsigned i = 0; i != width; i++)
+					*(uint32_t*)(dst + i * 3) = RGBAF16toRGBU8(src + i);
+		}
+		else
+		{
+			//The fastest (implemented) way to convert from RGBA to BGR
+			uint64_t *srcEnd8 = src + ((width*height)&~7), *srcEnd1 = src + (width*height);
+			for (; src != srcEnd8; dst += 24, src += 8)
+			{
+				*(uint32_t*)(dst     ) = RGBAF16toRGBU8(src    );
+				*(uint32_t*)(dst +  3) = RGBAF16toRGBU8(src + 1);
+				*(uint32_t*)(dst +  6) = RGBAF16toRGBU8(src + 2);
+				*(uint32_t*)(dst +  9) = RGBAF16toRGBU8(src + 3);
+				*(uint32_t*)(dst + 12) = RGBAF16toRGBU8(src + 4);
+				*(uint32_t*)(dst + 15) = RGBAF16toRGBU8(src + 5);
+				*(uint32_t*)(dst + 18) = RGBAF16toRGBU8(src + 6);
+				*(uint32_t*)(dst + 21) = RGBAF16toRGBU8(src + 7);
+			}
+			for (; src != srcEnd1; dst += 3, src++)
+				*(uint32_t*)(dst) = RGBAF16toRGBU8(src);
+		}
+	}
+
+	if (MirrorMode == MIRRORMODE_HORIZONTALLY)
+	{
+		//Handle horizontal flipping
+		for (dst = (uint8_t*)mapResource.pData; dst != dstEnd; dst += width * 3)
+			for (uint8_t tmp[3], *dstA = dst, *dstB = dst + width * 3 - 3; dstA < dstB; dstA += 3, dstB -= 3)
+				memcpy(tmp, dstA, 3), memcpy(dstA, dstB, 3), memcpy(dstB, tmp, 3);
+	}
 
 	//Push the captured data to the direct show filter
-	SharedImageMemory::ESendResult res = c->m_sender->Send(desc.Width, desc.Height, ResizeMode, (const unsigned char*)mapResource.pData);
+	SharedImageMemory::ESendResult res = c->m_sender->Send(width, height, ResizeMode, (const unsigned char*)mapResource.pData);
 	ctx->Unmap(c->m_textureBuf, 0);
 
 	switch (res)
