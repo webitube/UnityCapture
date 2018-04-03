@@ -70,7 +70,7 @@ There are two settings for the 'Unity Capture' behavior.
 
 ## Output Device Configuration
 
-There are three settings in the configuration panel offered by the capture device. Some applications like OBS allow you to access
+There are four settings in the configuration panel offered by the capture device. Some applications like OBS allow you to access
 these settings with a 'Configure Video' button, other applications like web browsers don't.
 
 These settings control what will be displayed in the output in case of an error:
@@ -87,6 +87,23 @@ There are four modes that can be set for the settings above:
   You can use this if you want to show a 'Please stand by...' image layer while Unity stopped.
 
 For the two colored patterns an additional text message will be displayed detailing the error.
+
+The setting 'Display FPS' shows the capture frame rate (frames per second) on the capture device output.
+
+
+## Performance caveats
+
+There are two main improvements to capture stream frame rate.
+
+One is to disable the camera setting 'Allow HDR' which causes the camera output texture format
+to be in a favorable format (8-bit integer per color per pixel). If your shaders and post-processing
+allows it, it is recommended to leave HDR off.
+
+The other is the setting 'DoubleBuffering' in the UnityCapture component.  
+Double buffering causes 1 frame of additional latency but improves the image data throughput.  
+You can check the Unity profiler for how much it inpacts performance in your project.
+
+Otherwise it is recommended to leave scaling and mirroring disabled in the UnityCapture component.
 
 
 ## Todo

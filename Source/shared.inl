@@ -13,7 +13,7 @@
 #include <initguid.h>
 #include <stdint.h>
 
-#define MAX_SHARED_IMAGE_SIZE (3840 * 2160 * 3) //4K
+#define MAX_SHARED_IMAGE_SIZE (3840 * 2160 * 4 * sizeof(short)) //4K (RGBA max 16bit per pixel)
 
 #if _DEBUG
 #define UCASSERT(cond) ((cond) ? ((void)0) : *(volatile int*)0 = 0xbad|(OutputDebugStringA("[FAILED ASSERT] " #cond "\n"),1))
@@ -36,16 +36,18 @@ struct SharedImageMemory
 	~SharedImageMemory()
 	{
 		if (m_pMutex) delete m_pMutex;
-		if (m_pUnscaledBuf) delete[] m_pUnscaledBuf;
 		if (m_hWantFrameEvent) CloseHandle(m_hWantFrameEvent);
 		if (m_hSentFrameEvent) CloseHandle(m_hSentFrameEvent);
 		if (m_hSharedFile) CloseHandle(m_hSharedFile);
 	}
 
 	enum EResizeMode { RESIZEMODE_DISABLED = 0, RESIZEMODE_LINEAR = 1 };
-
+	enum EMirrorMode { MIRRORMODE_DISABLED = 0, MIRRORMODE_HORIZONTALLY = 1 };
 	enum EReceiveResult { RECEIVERES_CAPTUREINACTIVE, RECEIVERES_NEWFRAME, RECEIVERES_OLDFRAME };
-	EReceiveResult Receive(unsigned char* pOutBuf, int OutWidth, int OutHeight, bool *pNeedResize, EResizeMode *pResizeMode, unsigned char** ppUnscaledBuf, int* pUnscaledWidth, int* pUnscaledHeight)
+
+	typedef void (*ReceiveCallbackFunc)(int width, int height, int stride, int rgbabits, EResizeMode resizemode, EMirrorMode mirrormode, uint8_t* buffer, void* callback_data);
+
+	EReceiveResult Receive(ReceiveCallbackFunc callback, void* callback_data)
 	{
 		if (!Open(true)) return RECEIVERES_CAPTUREINACTIVE;
 
@@ -53,57 +55,29 @@ struct SharedImageMemory
 		bool IsNewFrame = (WaitForSingleObject(m_hSentFrameEvent, 200) == WAIT_OBJECT_0);
 
 		m_pMutex->Lock();
-		const size_t imageSize = (size_t)m_pSharedBuf->width * (size_t)m_pSharedBuf->height * 3;
-		*pUnscaledWidth = m_pSharedBuf->width;
-		*pUnscaledHeight = m_pSharedBuf->height;
-		*pNeedResize =  (m_pSharedBuf->width != OutWidth || m_pSharedBuf->height != OutHeight);
-		*pResizeMode = (EResizeMode)m_pSharedBuf->resizemode;
-		if (!*pNeedResize) memcpy(pOutBuf, m_pSharedBuf->data, imageSize);
-		else if (*pResizeMode != RESIZEMODE_DISABLED)
-		{
-			if (m_iUnscaledBufSize != imageSize)
-			{
-				if (m_pUnscaledBuf) delete[] m_pUnscaledBuf;
-				m_pUnscaledBuf = new unsigned char[imageSize];
-				m_iUnscaledBufSize = imageSize;
-			}
-			memcpy((*ppUnscaledBuf = m_pUnscaledBuf), m_pSharedBuf->data, imageSize);
-		}
+		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, m_pSharedBuf->rgbabits, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->data, callback_data);
 		m_pMutex->Unlock();
 
 		return (IsNewFrame ? RECEIVERES_NEWFRAME : RECEIVERES_OLDFRAME);
 	}
 
-	//void ReceiveUnscaled(unsigned char** ppUnscaledBuf, int* pUnscaledWidth, int* pUnscaledHeight)
-	//{
-	//	UCASSERT(ppUnscaledBuf && pUnscaledWidth && pUnscaledHeight && Open(true));
-	//	m_pMutex->Lock();
-	//	if (m_iUnscaledBufSize != m_pSharedBuf->size)
-	//	{
-	//		if (m_pUnscaledBuf) delete[] m_pUnscaledBuf;
-	//		m_pUnscaledBuf = new unsigned char[m_pSharedBuf->size];
-	//		m_iUnscaledBufSize = m_pSharedBuf->size;
-	//	}
-	//	*pUnscaledWidth = m_pSharedBuf->width;
-	//	*pUnscaledHeight = m_pSharedBuf->height;
-	//	memcpy((*ppUnscaledBuf = m_pUnscaledBuf), m_pSharedBuf->data, m_pSharedBuf->size);
-	//	m_pMutex->Unlock();
-	//}
-
 	enum ESendResult { SENDRES_CAPTUREINACTIVE, SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
-	ESendResult Send(int width, int height, EResizeMode resizemode, const unsigned char* buffer)
+	ESendResult Send(int width, int height, int stride, int rgbabits, EResizeMode resizemode, EMirrorMode mirrormode, const uint8_t* buffer)
 	{
 		UCASSERT(buffer);
 		if (!Open(false)) return SENDRES_CAPTUREINACTIVE;
 
-		DWORD imageSize = (DWORD)width * (DWORD)height * 3;
-		if (m_pSharedBuf->maxSize < imageSize) return SENDRES_TOOLARGE;
+		DWORD DataSize = (DWORD)stride * (DWORD)height * 4 * (rgbabits / 8);
+		if (m_pSharedBuf->maxSize < DataSize) return SENDRES_TOOLARGE;
 
 		m_pMutex->Lock();
 		m_pSharedBuf->width = width;
 		m_pSharedBuf->height = height;
+		m_pSharedBuf->stride = stride;
+		m_pSharedBuf->rgbabits = rgbabits;
 		m_pSharedBuf->resizemode = resizemode;
-		memcpy(m_pSharedBuf->data, buffer, imageSize);
+		m_pSharedBuf->mirrormode = mirrormode;
+		memcpy(m_pSharedBuf->data, buffer, DataSize);
 		m_pMutex->Unlock();
 
 		SetEvent(m_hSentFrameEvent);
@@ -154,7 +128,6 @@ private:
 
 		if (ForReceiving && m_pSharedBuf->maxSize != MAX_SHARED_IMAGE_SIZE)
 		{
-			ZeroMemory(m_pSharedBuf, sizeof(SharedMemHeader) + MAX_SHARED_IMAGE_SIZE);
 			m_pSharedBuf->maxSize = MAX_SHARED_IMAGE_SIZE;
 		}
 		return true;
@@ -174,17 +147,16 @@ private:
 		DWORD maxSize;
 		int width;
 		int height;
+		int stride;
+		int rgbabits;
 		int resizemode;
-		unsigned char data[1];
+		int mirrormode;
+		uint8_t data[1];
 	};
-
 
 	SharedMutex* m_pMutex;
 	HANDLE m_hWantFrameEvent;
 	HANDLE m_hSentFrameEvent;
 	HANDLE m_hSharedFile;
 	SharedMemHeader* m_pSharedBuf;
-
-	size_t m_iUnscaledBufSize;
-	unsigned char* m_pUnscaledBuf;
 };

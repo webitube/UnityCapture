@@ -40,8 +40,6 @@ enum
 	RET_ERROR_READTEXTURE = 104,
 };
 
-enum EMirrorMode { MIRRORMODE_DISABLED = 0, MIRRORMODE_HORIZONTALLY = 1 };
-
 #include <d3d11.h>
 
 static int g_GraphicsDeviceType = -1;
@@ -49,32 +47,31 @@ static ID3D11Device* g_D3D11GraphicsDevice = 0;
 
 struct UnityCaptureInstance
 {
-	SharedImageMemory* m_sender;
-	int m_width;
-	int m_height;
-	DXGI_FORMAT m_format;
-	ID3D11Texture2D* m_textureBuf;
+	SharedImageMemory* Sender;
+	int Width, Height;
+	DXGI_FORMAT Format;
+	bool UseDoubleBuffering, AlternativeBuffer;
+	ID3D11Texture2D* Textures[2];
 };
 
 extern "C" __declspec(dllexport) UnityCaptureInstance* CaptureCreateInstance()
 {
 	UnityCaptureInstance* c = new UnityCaptureInstance();
-	c->m_sender = new SharedImageMemory();
-	c->m_width = 0;
-	c->m_height = 0;
-	c->m_textureBuf = 0;
+	memset(c, 0, sizeof(UnityCaptureInstance));
+	c->Sender = new SharedImageMemory();
 	return c;
 }
 
 extern "C" __declspec(dllexport) void CaptureDeleteInstance(UnityCaptureInstance* c)
 {
 	if (!c) return;
-	delete c->m_sender;
-	if (c->m_textureBuf) c->m_textureBuf->Release();
+	delete c->Sender;
+	if (c->Textures[0]) c->Textures[0]->Release();
+	if (c->Textures[1]) c->Textures[1]->Release();
 	delete c;
 }
 
-extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, SharedImageMemory::EResizeMode ResizeMode, EMirrorMode MirrorMode)
+extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode)
 {
 	if (!c || !TextureNativePtr) return RET_ERROR_PARAMETER;
 	if (g_GraphicsDeviceType != kUnityGfxRendererD3D11) return RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
@@ -90,7 +87,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	d3dtex->GetDesc(&desc);
 	if (!desc.Width || !desc.Height) return RET_ERROR_READTEXTURE;
 
-	if (c->m_width != desc.Width || c->m_height != desc.Height || c->m_format != desc.Format)
+	if (c->Width != desc.Width || c->Height != desc.Height || c->Format != desc.Format || c->UseDoubleBuffering != UseDoubleBuffering)
 	{
 		//Allocate a Texture2D resource which holds the texture with CPU memory access
 		D3D11_TEXTURE2D_DESC textureDesc;
@@ -105,12 +102,21 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 		textureDesc.Usage = D3D11_USAGE_STAGING;
 		textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		textureDesc.MiscFlags = 0;
-		if (c->m_textureBuf) c->m_textureBuf->Release();
-		g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->m_textureBuf);
-		c->m_width = desc.Width;
-		c->m_height = desc.Height;
-		c->m_format = desc.Format;
+		if (c->Textures[0]) c->Textures[0]->Release();
+		g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->Textures[0]);
+		if (c->Textures[1]) c->Textures[1]->Release(); 
+		if (UseDoubleBuffering) g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->Textures[1]);
+		else c->Textures[1] = NULL;
+		c->Width = desc.Width;
+		c->Height = desc.Height;
+		c->Format = desc.Format;
+		c->UseDoubleBuffering = UseDoubleBuffering;
 	}
+
+	//Handle double buffer
+	if (c->UseDoubleBuffering) c->AlternativeBuffer ^= 1;
+	ID3D11Texture2D* WriteTexture = c->Textures[c->UseDoubleBuffering &&  c->AlternativeBuffer ? 1 : 0];
+	ID3D11Texture2D* ReadTexture  = c->Textures[c->UseDoubleBuffering && !c->AlternativeBuffer ? 1 : 0];
 
 	//Check texture format
 	int RGBABits = 0;
@@ -119,89 +125,14 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	if (!RGBABits) return RET_ERROR_TEXTUREFORMAT;
 
 	//Copy render texture to texture with CPU access and map the image data to RAM
-	ctx->CopyResource(c->m_textureBuf, d3dtex);
+	ctx->CopyResource(WriteTexture, d3dtex);
 	D3D11_MAPPED_SUBRESOURCE mapResource;
-	if (FAILED(ctx->Map(c->m_textureBuf, 0, D3D11_MAP_READ, NULL, &mapResource))) return RET_ERROR_READTEXTURE;
-
-	//Read image block without row gaps (where pitch is larger than width), also change from RGBA to BGR while at it
-	//We write the modified image back into the same memory because it always fits (3 instead of 4 pixels, guaranteed to have no gap at the row end)
-	//so there is no need for a temporary buffer to store the modified result before sending.
-	const unsigned width = desc.Width, height = desc.Height, dstPitch = width * 3, srcPitch = mapResource.RowPitch / (RGBABits / 2);
-	uint8_t *dst = (uint8_t*)mapResource.pData, *dstEnd = dst + height * dstPitch;
-	if (RGBABits == 8)
-	{
-		uint32_t *src = (uint32_t*)mapResource.pData;
-		if (srcPitch != width)
-		{
-			//Handle a case where the texture pitch does have a gap on the right side
-			for (; dst != dstEnd; dst += dstPitch, src += srcPitch)
-				for (unsigned i = 0; i != width; i++)
-					*(uint32_t*)(dst + i * 3) = _byteswap_ulong(src[i]) >> 8;
-		}
-		else
-		{
-			//The fastest (implemented) way to convert from RGBA to BGR
-			uint32_t *srcEnd8 = src + ((width*height)&~7), *srcEnd1 = src + (width*height);
-			for (; src != srcEnd8; dst += 24, src += 8)
-			{
-				*(uint32_t*)(dst     ) = _byteswap_ulong(src[0]) >> 8;
-				*(uint32_t*)(dst +  3) = _byteswap_ulong(src[1]) >> 8;
-				*(uint32_t*)(dst +  6) = _byteswap_ulong(src[2]) >> 8;
-				*(uint32_t*)(dst +  9) = _byteswap_ulong(src[3]) >> 8;
-				*(uint32_t*)(dst + 12) = _byteswap_ulong(src[4]) >> 8;
-				*(uint32_t*)(dst + 15) = _byteswap_ulong(src[5]) >> 8;
-				*(uint32_t*)(dst + 18) = _byteswap_ulong(src[6]) >> 8;
-				*(uint32_t*)(dst + 21) = _byteswap_ulong(src[7]) >> 8;
-			}
-			for (; src != srcEnd1; dst += 3, src++)
-				*(uint32_t*)(dst) = _byteswap_ulong(*src) >> 8;
-		}
-	}
-	else if (RGBABits == 16)
-	{
-		//16 bit color downscaling (HDR (16 bit floats) to BGR)
-		float tmpf; uint16_t *tmpp, tmpr, tmpg, tmpb;
-		#define F16toU8(s) ((s) & 0x8000 ? 0 : (*(uint32_t*)&tmpf = ((s) << 13) + 0x38000000, tmpf < 1.0f ? (int)(tmpf * 255.99f) : 255))
-		#define RGBAF16toRGBU8(psrc) (tmpp = (uint16_t*)(psrc), tmpr = tmpp[0], tmpg = tmpp[1], tmpb = tmpp[2], (F16toU8(tmpr) << 16) | (F16toU8(tmpg) << 8) | (F16toU8(tmpb)))
-		uint64_t *src = (uint64_t*)mapResource.pData;
-		if (srcPitch != width)
-		{
-			//Handle a case where the texture pitch does have a gap on the right side
-			for (; dst != dstEnd; dst += dstPitch, src += srcPitch)
-				for (unsigned i = 0; i != width; i++)
-					*(uint32_t*)(dst + i * 3) = RGBAF16toRGBU8(src + i);
-		}
-		else
-		{
-			//The fastest (implemented) way to convert from RGBA to BGR
-			uint64_t *srcEnd8 = src + ((width*height)&~7), *srcEnd1 = src + (width*height);
-			for (; src != srcEnd8; dst += 24, src += 8)
-			{
-				*(uint32_t*)(dst     ) = RGBAF16toRGBU8(src    );
-				*(uint32_t*)(dst +  3) = RGBAF16toRGBU8(src + 1);
-				*(uint32_t*)(dst +  6) = RGBAF16toRGBU8(src + 2);
-				*(uint32_t*)(dst +  9) = RGBAF16toRGBU8(src + 3);
-				*(uint32_t*)(dst + 12) = RGBAF16toRGBU8(src + 4);
-				*(uint32_t*)(dst + 15) = RGBAF16toRGBU8(src + 5);
-				*(uint32_t*)(dst + 18) = RGBAF16toRGBU8(src + 6);
-				*(uint32_t*)(dst + 21) = RGBAF16toRGBU8(src + 7);
-			}
-			for (; src != srcEnd1; dst += 3, src++)
-				*(uint32_t*)(dst) = RGBAF16toRGBU8(src);
-		}
-	}
-
-	if (MirrorMode == MIRRORMODE_HORIZONTALLY)
-	{
-		//Handle horizontal flipping
-		for (dst = (uint8_t*)mapResource.pData; dst != dstEnd; dst += width * 3)
-			for (uint8_t tmp[3], *dstA = dst, *dstB = dst + width * 3 - 3; dstA < dstB; dstA += 3, dstB -= 3)
-				memcpy(tmp, dstA, 3), memcpy(dstA, dstB, 3), memcpy(dstB, tmp, 3);
-	}
+	if (FAILED(ctx->Map(ReadTexture, 0, D3D11_MAP_READ, NULL, &mapResource))) return RET_ERROR_READTEXTURE;
 
 	//Push the captured data to the direct show filter
-	SharedImageMemory::ESendResult res = c->m_sender->Send(width, height, ResizeMode, (const unsigned char*)mapResource.pData);
-	ctx->Unmap(c->m_textureBuf, 0);
+	SharedImageMemory::ESendResult res = c->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (RGBABits / 2), RGBABits, ResizeMode, MirrorMode, (const unsigned char*)mapResource.pData);
+
+	ctx->Unmap(ReadTexture, 0);
 
 	switch (res)
 	{

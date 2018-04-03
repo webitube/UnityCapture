@@ -66,10 +66,11 @@ static struct { int width, height; } _media[] =
 };
 
 //Error draw modes (what to display on screen in case of errors/warnings)
-enum EErrorDrawMode { EDM_GREENKEY, EDM_BLUEPINK, EDM_GREENYELLOW, EDM_BLACK };
-wchar_t* ErrorDrawModeNames[] = { L"Green Key (RGB #00FE00)", L"Blue/Pink Pattern", L"Green/Yellow Pattern", L"Fill Black" };
 enum EErrorDrawCase { EDC_ResolutionMismatch, EDC_UnityNeverStarted, EDC_UnitySendingStopped, _EDC_MAX };
-EErrorDrawMode ErrorDrawModes[_EDC_MAX] = { EDM_BLUEPINK, EDM_GREENYELLOW, EDM_GREENKEY };
+enum EErrorDrawMode { EDM_GREENKEY, EDM_BLUEPINK, EDM_GREENYELLOW, EDM_BLACK };
+static EErrorDrawMode ErrorDrawModes[_EDC_MAX] = { EDM_BLUEPINK, EDM_GREENYELLOW, EDM_GREENKEY };
+static wchar_t* ErrorDrawModeNames[] = { L"Green Key (RGB #00FE00)", L"Blue/Pink Pattern", L"Green/Yellow Pattern", L"Fill Black" };
+static bool OutputFrameRate = false;
 
 #ifdef _DEBUG
 void DebugLog(const char *format, ...)
@@ -103,24 +104,20 @@ public:
 		m_prevStartTime = 0;
 		m_avgTimePerFrame = 10000000 / 30;
 		m_pReceiver = new SharedImageMemory();
+		m_iUnscaledBufSize = 0;
+		m_pUnscaledBuf = NULL;
 		GetMediaType(0, &m_mt);
 	}
 
 	virtual ~CCaptureStream()
 	{
 		delete m_pReceiver;
+		if (m_pUnscaledBuf) delete[] m_pUnscaledBuf;
 	}
 
 private:
 	HRESULT FillBuffer(IMediaSample *pSamp) override
 	{
-		#ifdef _DEBUG
-		{
-			static LONGLONG MyFPS = 0, MyLastFPSTime = GetTickCount64();
-			for (MyFPS++; GetTickCount64() - MyLastFPSTime > 1000; MyFPS = 0, MyLastFPSTime += 1000) { DebugLog("[FillBuffer] FPS: %d\n", MyFPS); }
-		}
-		#endif
-
 		HRESULT hr;
 		BYTE* pBuf;
 		VIDEOINFO *pvi = (VIDEOINFO*)m_mt.Format();
@@ -131,114 +128,329 @@ private:
 		UCASSERT(pSamp->GetSize() == pvi->bmiHeader.biSizeImage);
 		UCASSERT(DIBSIZE(pvi->bmiHeader) == pvi->bmiHeader.biSizeImage);
 
-		if (FAILED(hr = pSamp->SetActualDataLength(pvi->bmiHeader.biSizeImage))) return hr;
 		if (FAILED(hr = pSamp->GetPointer(&pBuf))) return hr;
+		if (FAILED(hr = pSamp->SetActualDataLength(pvi->bmiHeader.biSizeImage))) return hr;
 		if (FAILED(hr = pSamp->SetTime(&startTime, &endTime))) return hr;
 		if (FAILED(hr = pSamp->SetMediaTime(&mtStart, &mtEnd))) return hr;
 
-		bool NeedResize;
-		unsigned char* pUnscaledBuf;
-		int RecvWidth, RecvHeight;
-		SharedImageMemory::EResizeMode ResizeMode;
-		SharedImageMemory::EReceiveResult ReceiveResult = m_pReceiver->Receive(pBuf, pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight, &NeedResize, &ResizeMode, &pUnscaledBuf, &RecvWidth, &RecvHeight);
-		if (ReceiveResult == SharedImageMemory::RECEIVERES_CAPTUREINACTIVE)
+		ProcessState State = { pBuf, pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight, this };
+		switch (m_pReceiver->Receive((SharedImageMemory::ReceiveCallbackFunc)ProcessImage, &State))
 		{
-			Sleep((DWORD)(m_avgTimePerFrame / 10000 - 1));
-			//Show color pattern indicating that Unity is not sending frame data yet
-			char DisplayString[] = "Unity has not started sending image data", *DisplayStrings[] = { DisplayString };
-			int DisplayStringLens[] = { sizeof(DisplayString) - 1 };
-			FillErrorPattern(ErrorDrawModes[EDC_UnityNeverStarted], pBuf, pvi->bmiHeader, 1, DisplayStrings, DisplayStringLens);
-			return S_OK;
-		}
+			case SharedImageMemory::RECEIVERES_CAPTUREINACTIVE:{
+				//Show color pattern indicating that Unity is not sending frame data yet
+				char DisplayString[] = "Unity has not started sending image data", *DisplayStrings[] = { DisplayString };
+				int DisplayStringLens[] = { sizeof(DisplayString) - 1 };
+				FillErrorPattern(ErrorDrawModes[EDC_UnityNeverStarted], &State, 1, DisplayStrings, DisplayStringLens, m_llFrame);
+				Sleep((DWORD)(m_avgTimePerFrame / 10000 - 1)); //just wait a bit until capturing next frame
+				break;}
 
-		if (ReceiveResult == SharedImageMemory::RECEIVERES_OLDFRAME)
-		{
-			if (++m_llFrameMissCount > 5)
-			{
+			case SharedImageMemory::RECEIVERES_NEWFRAME:
+				if (m_llFrameMissCount) m_llFrameMissCount = 0;
+				break;
+
+			case SharedImageMemory::RECEIVERES_OLDFRAME:{
+				if (m_llFrameMissCount++ < 5) break;
 				//Show color pattern when having 5 frames without new image (probably Unity stopped sending data)
 				char DisplayString[] = "Unity has stopped sending image data", *DisplayStrings[] = { DisplayString };
 				int DisplayStringLens[] = { sizeof(DisplayString) - 1 };
-				FillErrorPattern(ErrorDrawModes[EDC_UnitySendingStopped], pBuf, pvi->bmiHeader, 1, DisplayStrings, DisplayStringLens);
-				return S_OK;
-			}
+				FillErrorPattern(ErrorDrawModes[EDC_UnitySendingStopped], &State, 1, DisplayStrings, DisplayStringLens, m_llFrame);
+				break;}
 		}
-		else m_llFrameMissCount = 0;
-
-		if (NeedResize)
-		{
-			if (ResizeMode == SharedImageMemory::RESIZEMODE_DISABLED)
-			{
-				//Show color pattern indicating that the requested resolution does not match the resolution provided by Unity
-				char DisplayString1[128], DisplayString2[128], DisplayString3[128];
-				char* DisplayStrings[] = { DisplayString1, DisplayString2, DisplayString3 };
-				int DisplayStringLens[] = {
-					sprintf_s(DisplayString1, sizeof(DisplayString1), "Capture output resolution is %d x %d", pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight),
-					sprintf_s(DisplayString2, sizeof(DisplayString2), "Unity render resolution is %d x %d", RecvWidth, RecvHeight),
-					sprintf_s(DisplayString3, sizeof(DisplayString3), "please set these to match"),
-				};
-				FillErrorPattern(ErrorDrawModes[EDC_ResolutionMismatch], pBuf, pvi->bmiHeader, 3, DisplayStrings, DisplayStringLens);
-			}
-			else if (ResizeMode == SharedImageMemory::RESIZEMODE_LINEAR)
-			{
-				const unsigned width = (unsigned)pvi->bmiHeader.biWidth, height = (unsigned)pvi->bmiHeader.biHeight, pitch = width * 3, RecvPitch = (unsigned)RecvWidth * 3;
-				const double aw = width, ah = height;
-				const double scaling = max(RecvWidth / aw, RecvHeight / ah);
-				const double ax = (aw - (RecvWidth  / scaling)) / 2.0;
-				const double ay = (ah - (RecvHeight / scaling)) / 2.0;
-				const unsigned xmin = (unsigned)ax + (unsigned)((ax - (unsigned)ax) * scaling), xmax =  width - (unsigned)ax;
-				const unsigned ymin = (unsigned)ay + (unsigned)((ay - (unsigned)ay) * scaling), ymax = height - (unsigned)ay;
-				if (ax) ZeroMemory(pBuf, pvi->bmiHeader.biSizeImage); //black all
-				if (ay) ZeroMemory(pBuf,                          ymin  * pitch); //black top border
-				if (ay) ZeroMemory(pBuf + ymax * pitch, (height - ymax) * pitch); //black bottom border
-				for (unsigned y = ymin; y < ymax; y++)
-				{
-					for (unsigned x = xmin; x < xmax; x++)
-					{
-						const unsigned isx = (unsigned)((x - ax) * scaling), isy = (unsigned)((y - ay) * scaling);
-						UCASSERT(isx >= 0 && isy >= 0 && isx < (unsigned)RecvWidth && isy < (unsigned)RecvHeight);
-						unsigned char* dst = pBuf + y * pitch + x * 3, *src = pUnscaledBuf + isy * RecvPitch + isx * 3;
-						dst[0] = src[0];
-						dst[1] = src[1];
-						dst[2] = src[2];
-					}
-				}
-			}
-			else
-			{
-				UCASSERT(false);
-				FillErrorPattern(EDM_BLACK, pBuf, pvi->bmiHeader);
-			}
-		}
+		if (OutputFrameRate) RenderFPSDisplay(&State);
 		return S_OK;
 	}
 
-	void FillErrorPattern(EErrorDrawMode edm, BYTE* pBuf, BITMAPINFOHEADER BmiHeader, int LineCount = 0, char** LineStrings = NULL, int* LineLengths = NULL)
+	struct ProcessJob
 	{
-		if (m_llFrame < 5) edm = EDM_BLACK; //show errors as just black during the first 5 frames (when starting)
-		BYTE *p = pBuf, *pEnd = pBuf + BmiHeader.biSizeImage;
+		enum EType { JOB_NONE, JOB_RGBA8toRGB8, JOB_RGBA16toRGB8, JOB_RESIZE_LINEAR, JOB_MIRROR_HORIZONTAL } Type;
+		const void *BufIn; void *BufOut;
+		size_t Width, RowStart, RowEnd, RGBAInStride, ResizeToHeight, ResizeFromWidth, ResizeFromHeight;
+
+		inline void Execute()
+		{
+			if      (Type == JOB_RGBA8toRGB8)       RGBA8toRGB8();
+			else if (Type == JOB_RGBA16toRGB8)      RGBA16toRGB8();
+			else if (Type == JOB_RESIZE_LINEAR)     ResizeLinear();
+			else if (Type == JOB_MIRROR_HORIZONTAL) MirrorHorizontal();
+		}
+
+		void RGBA8toRGB8()
+		{
+			const uint32_t *src = (const uint32_t*)BufIn + (RowStart * RGBAInStride);
+			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
+			if (RGBAInStride != Width)
+			{
+				//Handle a case where the texture pitch does have a gap on the right side
+				const uint32_t *srcLastRow = (const uint32_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
+				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; dst += dstPitch, src += srcStride)
+					for (size_t i = 0; i != iMax; i++, dst += 3)
+						*(uint32_t*)dst = _byteswap_ulong(src[i]) >> 8;
+				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
+					*(uint32_t*)dst = _byteswap_ulong(*src) >> 8;
+			}
+			else
+			{
+				//The fastest (implemented) path to convert from RGBA to BGR
+				const uint32_t *srcEnd8 = src + (((RowEnd-RowStart)*Width-1)&~7), *srcEnd1 = src + ((RowEnd-RowStart)*Width-1);
+				for (; src != srcEnd8; dst += 24, src += 8)
+				{
+					*(uint32_t*)(dst     ) = _byteswap_ulong(src[0]) >> 8;
+					*(uint32_t*)(dst +  3) = _byteswap_ulong(src[1]) >> 8;
+					*(uint32_t*)(dst +  6) = _byteswap_ulong(src[2]) >> 8;
+					*(uint32_t*)(dst +  9) = _byteswap_ulong(src[3]) >> 8;
+					*(uint32_t*)(dst + 12) = _byteswap_ulong(src[4]) >> 8;
+					*(uint32_t*)(dst + 15) = _byteswap_ulong(src[5]) >> 8;
+					*(uint32_t*)(dst + 18) = _byteswap_ulong(src[6]) >> 8;
+					*(uint32_t*)(dst + 21) = _byteswap_ulong(src[7]) >> 8;
+				}
+				for (; src != srcEnd1; dst += 3, src++)
+					*(uint32_t*)(dst) = _byteswap_ulong(*src) >> 8;
+			}
+			uint32_t FinalPixel = _byteswap_ulong(*src) >> 8;
+			memcpy(dst, &FinalPixel, 3);
+		}
+
+		void RGBA16toRGB8()
+		{
+			//16 bit color downscaling (HDR (16 bit floats) to BGR)
+			float tmpf; uint16_t *tmpp, tmpr, tmpg, tmpb;
+			#define F16toU8(s) ((s) & 0x8000 ? 0 : (*(uint32_t*)&tmpf = ((s) << 13) + 0x38000000, tmpf < 1.0f ? (int)(tmpf * 255.99f) : 255))
+			#define RGBAF16toBGRU8(psrc) (tmpp = (uint16_t*)(psrc), tmpr = tmpp[0], tmpg = tmpp[1], tmpb = tmpp[2], (F16toU8(tmpr)<<16) | (F16toU8(tmpg)<<8) | F16toU8(tmpb))
+			const uint64_t *src = (const uint64_t*)BufIn + (RowStart * RGBAInStride);
+			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
+			if (RGBAInStride != Width)
+			{
+				//Handle a case where the texture pitch does have a gap on the right side
+				const uint64_t *srcLastRow = (const uint64_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
+				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; dst += dstPitch, src += srcStride)
+					for (size_t i = 0; i != iMax; i++, dst += 3)
+						*(uint32_t*)dst = RGBAF16toBGRU8(src + i);
+				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
+					*(uint32_t*)dst = RGBAF16toBGRU8(src);
+			}
+			else
+			{
+				//The fastest (implemented) path to convert from RGBA to BGR
+				const uint64_t *srcEnd8 = src + (((RowEnd-RowStart)*Width-1)&~7), *srcEnd1 = src + ((RowEnd-RowStart)*Width-1);
+				for (; src != srcEnd8; dst += 24, src += 8)
+				{
+					*(uint32_t*)(dst     ) = RGBAF16toBGRU8(src    );
+					*(uint32_t*)(dst +  3) = RGBAF16toBGRU8(src + 1);
+					*(uint32_t*)(dst +  6) = RGBAF16toBGRU8(src + 2);
+					*(uint32_t*)(dst +  9) = RGBAF16toBGRU8(src + 3);
+					*(uint32_t*)(dst + 12) = RGBAF16toBGRU8(src + 4);
+					*(uint32_t*)(dst + 15) = RGBAF16toBGRU8(src + 5);
+					*(uint32_t*)(dst + 18) = RGBAF16toBGRU8(src + 6);
+					*(uint32_t*)(dst + 21) = RGBAF16toBGRU8(src + 7);
+				}
+				for (; src != srcEnd1; dst += 3, src++)
+					*(uint32_t*)(dst) = RGBAF16toBGRU8(src);
+			}
+			//For the final pixel we can't use 4 byte uint32_t copy so we call memcpy
+			uint32_t FinalPixel = RGBAF16toBGRU8(src);
+			memcpy(dst, &FinalPixel, 3);
+			#undef F16toU8
+			#undef RGBAF16toBGRU8
+		}
+
+		void ResizeLinear()
+		{
+			const size_t w = Width, h = ResizeToHeight, pitch = w * 3, ResizeFromPitch = ResizeFromWidth * 3;
+			const double aw = (double)w, ah = (double)h;
+			const double scale = max(ResizeFromWidth / aw, ResizeFromHeight / ah);
+			const double ax = (aw - (ResizeFromWidth  / scale)) / 2.0;
+			const double ay = (ah - (ResizeFromHeight / scale)) / 2.0;
+			const uint8_t *src = (const uint8_t*)BufIn, BlackPixel[3] = {0, 0, 0};
+			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3);
+			for (size_t y = RowStart, yEnd = RowEnd, isOffsetMax = ResizeFromHeight * ResizeFromPitch; y != RowEnd; y++)
+				for (size_t x = 0; x != w; x++, dst += 3)
+				{
+					size_t isx = (size_t)((x-ax)*scale), isy = (size_t)((y-ay)*scale), isOffset = isy * ResizeFromPitch + isx * 3;
+					memcpy(dst, (isOffset >= isOffsetMax ? BlackPixel : src + isOffset), 3);
+				}
+		}
+
+		void MirrorHorizontal()
+		{
+			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
+			for (size_t dstPitch = Width * 3; dst != dstEnd; dst += dstPitch)
+				for (uint8_t tmp[3], *dstA = dst, *dstB = dst + dstPitch - 3; dstA < dstB; dstA += 3, dstB -= 3)
+					memcpy(tmp, dstA, 3), memcpy(dstA, dstB, 3), memcpy(dstB, tmp, 3);
+		}
+	};
+
+	struct ProcessWorkers
+	{
+		ProcessWorkers() : WorkersRunning(WORKERCOUNT)
+		{
+			for (size_t i = 0; i != WORKERCOUNT; i++) Threads[i].Start((sThread::FUNC_t)&ProcessThread, (void*)this);
+		}
+
+		~ProcessWorkers()
+		{
+			WorkersRunning = 0;
+			for (size_t i = 0; i != WORKERCOUNT; i++) NewJobSemaphore.Post(); //wake up all threads
+		}
+	
+		void StartNewJob(ProcessJob NewJob)
+		{
+			//Notify threads of new work to do
+			WorkingJobCount = 0;
+			size_t Num = NewJob.RowEnd;
+			for (size_t i = 0; i != WORKERCOUNT; i++)
+			{
+				NewJob.RowStart = Num * (i  ) / (WORKERCOUNT + 1);
+				NewJob.RowEnd   = Num * (i+1) / (WORKERCOUNT + 1);
+				Jobs[i] = NewJob;
+				NewJobSemaphore.Post();
+			}
+
+			//Do work in the main thread as well
+			NewJob.RowStart = NewJob.RowEnd;
+			NewJob.RowEnd   = Num;
+			NewJob.Execute();
+
+			//Wait for threads to finish working
+			for (size_t i = 0; i != WORKERCOUNT && JobDoneSemaphore.WaitForPost(); i++) {}
+		}
+
+	private:
+		//Wrapper objects for Windows concurrency objects (thread, mutex, semaphore)
+		struct sThread { typedef DWORD (WINAPI *FUNC_t)(LPVOID); sThread() : h(0) {} sThread(FUNC_t f, void* p = NULL) : h(0) { Start(f, p); } void Start(FUNC_t f, void* p = NULL) { if (h) this->~sThread(); h = CreateThread(0,0,f,p,0,0); } ~sThread() { if (h) { WaitForSingleObject(h, INFINITE); CloseHandle(h); } } private:HANDLE h;sThread(const sThread&);sThread& operator=(const sThread&);};
+		struct sMutex { sMutex() : h(CreateMutexA(0,0,0)) {} ~sMutex() { CloseHandle(h); } __inline void Lock() { WaitForSingleObject(h,INFINITE); } __inline void Unlock() { ReleaseMutex(h); } private:HANDLE h;sMutex(const sMutex&);sMutex& operator=(const sMutex&);};
+		struct sSemaphore { sSemaphore() : h(CreateSemaphoreA(0,0,32768,0)) {} ~sSemaphore() { CloseHandle(h); } __inline void Post() { ReleaseSemaphore(h, 1, 0); } __inline bool WaitForPost() { return WaitForSingleObject(h,INFINITE) == WAIT_OBJECT_0; } private:HANDLE h;sSemaphore(const sSemaphore&);sSemaphore& operator=(const sSemaphore&);};
+
+		enum { WORKERCOUNT = 3 };
+		sMutex JobsMutex;
+		sThread Threads[WORKERCOUNT];
+		ProcessJob Jobs[WORKERCOUNT];
+		sSemaphore NewJobSemaphore, JobDoneSemaphore;
+		size_t WorkingJobCount, WorkersRunning;
+
+		static void ProcessThread(ProcessWorkers* mw)
+		{
+			while (mw->NewJobSemaphore.WaitForPost() && mw->WorkersRunning)
+			{
+				mw->JobsMutex.Lock();
+				size_t MyJob = mw->WorkingJobCount++;
+				mw->JobsMutex.Unlock();
+				mw->Jobs[MyJob].Execute();
+				mw->JobDoneSemaphore.Post();
+			}
+		}
+	};
+
+	struct ProcessState
+	{
+		uint8_t* Buf;
+		int BufWidth, BufHeight;
+		CCaptureStream* Owner;
+	};
+
+	static void ProcessImage(int InWidth, int InHeight, int InStride, int InRGBABits, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, uint8_t* InBuf, ProcessState* State)
+	{
+		const bool NeedResize = (InWidth != State->BufWidth || InHeight != State->BufHeight);
+		if (NeedResize && ResizeMode == SharedImageMemory::RESIZEMODE_DISABLED)
+		{
+			//Show color pattern indicating that the requested resolution does not match the resolution provided by Unity
+			char DisplayString1[128], DisplayString2[128], DisplayString3[128];
+			char* DisplayStrings[] = { DisplayString1, DisplayString2, DisplayString3 };
+			int DisplayStringLens[] = {
+				sprintf_s(DisplayString1, sizeof(DisplayString1), "Capture output resolution is %d x %d", State->BufWidth, State->BufHeight),
+				sprintf_s(DisplayString2, sizeof(DisplayString2), "Unity render resolution is %d x %d", InWidth, InHeight),
+				sprintf_s(DisplayString3, sizeof(DisplayString3), "please set these to match"),
+			};
+			FillErrorPattern(ErrorDrawModes[EDC_ResolutionMismatch], State, 3, DisplayStrings, DisplayStringLens);
+			return;
+		}
+
+		if (NeedResize)
+		{
+			//Prepare buffer for image scaling
+			DWORD UnscaledBufSize = (InWidth * InHeight * 3);
+			if (State->Owner->m_iUnscaledBufSize != UnscaledBufSize)
+			{
+				if (State->Owner->m_pUnscaledBuf) delete[] State->Owner->m_pUnscaledBuf;
+				State->Owner->m_pUnscaledBuf = new uint8_t[UnscaledBufSize];
+				State->Owner->m_iUnscaledBufSize = UnscaledBufSize;
+			}
+		}
+
+		//Multi-threaded conversion of RGBA source to 8-bit BGR format while also eliminating possible row gaps (when stride != width)
+		UCASSERT(InRGBABits == 8 || InRGBABits == 16);
+		ProcessJob Job;
+		Job.Type = (InRGBABits == 8 ? ProcessJob::JOB_RGBA8toRGB8 : ProcessJob::JOB_RGBA16toRGB8);
+		Job.BufIn = InBuf, Job.BufOut = (NeedResize ? State->Owner->m_pUnscaledBuf : State->Buf);
+		Job.Width = InWidth, Job.RowStart = 0, Job.RowEnd = InHeight, Job.RGBAInStride = InStride;
+		State->Owner->m_ProcessWorkers.StartNewJob(Job);
+
+		if (NeedResize)
+		{
+			//Multi-threaded image scaling
+			Job.Type = ProcessJob::JOB_RESIZE_LINEAR;
+			Job.BufIn = State->Owner->m_pUnscaledBuf, Job.BufOut = State->Buf;
+			Job.Width = State->BufWidth, Job.RowStart = 0, Job.RowEnd = State->BufHeight;
+			Job.ResizeToHeight = State->BufHeight, Job.ResizeFromWidth = InWidth, Job.ResizeFromHeight = InHeight;
+			State->Owner->m_ProcessWorkers.StartNewJob(Job);
+		}
+
+		if (MirrorMode == SharedImageMemory::MIRRORMODE_HORIZONTALLY)
+		{
+			//Multi-threaded horizontal image flipping
+			Job.Type = ProcessJob::JOB_MIRROR_HORIZONTAL;
+			Job.BufOut = State->Buf;
+			Job.Width = State->BufWidth, Job.RowStart = 0, Job.RowEnd = State->BufHeight;
+			State->Owner->m_ProcessWorkers.StartNewJob(Job);
+		}
+	}
+
+	static void FillErrorPattern(EErrorDrawMode edm, ProcessState* State, int LineCount = 0, char** LineStrings = NULL, int* LineLengths = NULL, LONGLONG FrameNumber = -1)
+	{
+		if (FrameNumber >= 0 && FrameNumber < 5) edm = EDM_BLACK; //show errors as just black during the first 5 frames (when starting)
+		BYTE *p = State->Buf, *pEnd = State->Buf + (State->BufWidth * State->BufHeight * 3);
 		switch (edm)
 		{
 			case EDM_GREENKEY:    while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFE; *(p++) = 0x00; } break; //Filled with 0x00FE00 (BGR colors)
 			case EDM_GREENYELLOW: while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFF; *(p++) = (size_t)p%0xFF; } break; //Green/yellow color pattern (BGR colors)
 			case EDM_BLUEPINK:    while (p != pEnd) { *(p++) = 0xFF; *(p++) = 0x00; *(p++) = (size_t)p%0xFF; } break; //Blue/pink color pattern (BGR colors)
-			case EDM_BLACK:       ZeroMemory(pBuf, BmiHeader.biSizeImage); break; //Filled with black
+			case EDM_BLACK:       ZeroMemory(State->Buf, (State->BufWidth * State->BufHeight * 3)); break; //Filled with black
 		}
 
 		if (LineCount && edm != EDM_BLACK && edm != EDM_GREENKEY)
 		{
 			void* pTextBuf;
 			HDC TextDC = CreateCompatibleDC(0);
-			BITMAPINFO TextBMI = { BmiHeader };
+			BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, LineCount * 20, 1, 8 * 3, 0, LineCount * 20 * State->BufWidth * 3 };
 			TextBMI.bmiHeader.biHeight = LineCount * 20;
 			HBITMAP TextHBitmap = CreateDIBSection(TextDC, &TextBMI, DIB_RGB_COLORS, &pTextBuf, NULL, 0);
 			SelectObject(TextDC, TextHBitmap);
 			SetBkMode(TextDC, TRANSPARENT);
 			SetTextColor(TextDC, RGB(255, 0, 0));
 			for (int i = 0; i < LineCount; i++) TextOutA(TextDC, 10,  i * 20, LineStrings[i], LineLengths[i]);
-			memcpy(pBuf + 3 * ((BmiHeader.biHeight - TextBMI.bmiHeader.biHeight) / 2) * BmiHeader.biWidth, pTextBuf, 3 * TextBMI.bmiHeader.biHeight * BmiHeader.biWidth);
+			memcpy(State->Buf + ((State->BufHeight - TextBMI.bmiHeader.biHeight) / 2) * State->BufWidth * 3, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * 3);
 			DeleteObject(TextHBitmap);
 			DeleteDC(TextDC);
 		}
+	}
+
+	static void RenderFPSDisplay(ProcessState* State)
+	{
+		static LONGLONG MyFPS = 0, MyLastFPSTime = GetTickCount64(), MyLastFPS = 0;
+		for (MyFPS++; GetTickCount64() - MyLastFPSTime > 1000; MyFPS = 0, MyLastFPSTime += 1000) { MyLastFPS = MyFPS; }
+		char DisplayString[128];
+		int DisplayStringLen = sprintf_s(DisplayString, sizeof(DisplayString), "%d FPS", MyLastFPS);
+
+		void* pTextBuf;
+		HDC TextDC = CreateCompatibleDC(0);
+		BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, 20, 1, 8 * 3, 0, 20 * State->BufWidth * 3 };
+		HBITMAP TextHBitmap = CreateDIBSection(TextDC, &TextBMI, DIB_RGB_COLORS, &pTextBuf, NULL, 0);
+		SelectObject(TextDC, TextHBitmap);
+		SetBkMode(TextDC, TRANSPARENT);
+		SetTextColor(TextDC, RGB(0, 255, 0));
+		TextOutA(TextDC, 10, 0, DisplayString, DisplayStringLen);
+		memcpy(State->Buf, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * 3);
+		DeleteObject(TextHBitmap);
+		DeleteDC(TextDC);
 	}
 
 	//IUnknown
@@ -465,6 +677,9 @@ private:
 	REFERENCE_TIME m_prevStartTime;
 	REFERENCE_TIME m_avgTimePerFrame;
 	SharedImageMemory* m_pReceiver;
+	ProcessWorkers m_ProcessWorkers;
+	DWORD m_iUnscaledBufSize;
+	BYTE* m_pUnscaledBuf;
 
 	//IAMStreamControl
 	HRESULT STDMETHODCALLTYPE StartAt(const REFERENCE_TIME *ptStart, DWORD dwCookie) override { return NOERROR; }
@@ -510,7 +725,7 @@ private:
 				#pragma pack(2)
 				WORD FFFF, ClassID; wchar_t Text[2]; WORD NoData;
 				#pragma pack(4)
-			} Items[6];
+			} Items[8];
 			#pragma pack(4)
 		} md = {
 			{ WS_CHILD | WS_VISIBLE | DS_CENTER, NULL, sizeof(md.Items)/sizeof(MyData::Item) }, 0, 0, L"", {
@@ -520,12 +735,16 @@ private:
 			{ { WS_VISIBLE | WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST, NULL , 90, 35,  150, 100, 1003 }, 0xFFFF, 0x0085, L"-" }, //Combo Box
 			{ { WS_VISIBLE | WS_CHILD | SS_LEFT,                       NULL ,  5, 54,   80,  10, 1004 }, 0xFFFF, 0x0082, L"-" }, //Label
 			{ { WS_VISIBLE | WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST, NULL , 90, 53,  150, 100, 1005 }, 0xFFFF, 0x0085, L"-" }, //Combo Box
+			{ { WS_VISIBLE | WS_CHILD | SS_LEFT,                       NULL ,  5, 72,   80,  10, 1006 }, 0xFFFF, 0x0082, L"-" }, //Label
+			{ { WS_VISIBLE | WS_CHILD | WS_TABSTOP | BS_CHECKBOX,      NULL , 90, 71,  150,  10, 1007 }, 0xFFFF, 0x0080, L"-" }, //Check Box
 		}};
 
 		HWND hwnd = CreateDialogIndirectParamW(NULL, &md.Header, hwndParent, &MyDialogProc, (LPARAM)this);
 		SetDlgItemTextW(hwnd, 1000, L"Resolution mismatch:");
 		SetDlgItemTextW(hwnd, 1002, L"Unity never started:");
 		SetDlgItemTextW(hwnd, 1004, L"Unity sending stopped:");
+		SetDlgItemTextW(hwnd, 1006, L"Display FPS:");
+		SetDlgItemTextW(hwnd, 1007, L"Show capture frame rate");
 		for (int i = 0; i < 3; i++)
 		{
 			HWND hWndComboBox = GetDlgItem(hwnd, 1001 + i*2);
@@ -533,23 +752,25 @@ private:
 				SendMessageW(hWndComboBox, (UINT)CB_ADDSTRING, (WPARAM)0, (LPARAM)ErrorDrawModeNames[j]);
 			SendMessageA(hWndComboBox, CB_SETCURSEL, (WPARAM)ErrorDrawModes[i], (LPARAM)0);
 		}
+		SendMessage(GetDlgItem(hwnd, 1007), BM_SETCHECK, (OutputFrameRate ? BST_CHECKED : BST_UNCHECKED), 0);
 
 		SetWindowPos(hwnd, NULL, prect->left, prect->top, prect->right-prect->left, prect->bottom-prect->top, 0); //show in tab page
 		return S_OK;
 	}
 
-	static INT_PTR CALLBACK MyDialogProc(HWND hwnd,UINT uMsg,WPARAM wParam,LPARAM lParam)
+	static INT_PTR CALLBACK MyDialogProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 	{
 		if (uMsg == WM_INITDIALOG) return TRUE;
-		if (uMsg == WM_COMMAND && HIWORD(wParam) == 1) //combo box value changed
+		if (uMsg == WM_COMMAND)
 		{
-			//DebugLog("[DIALOG] WM_COMMAND - Command: %d - Value: %d - %d\n", (int)LOWORD(wParam), (int)HIWORD(wParam), (int)lParam);
-			int ItemID = LOWORD(wParam);
+			//DebugLog("[DIALOG] WM_COMMAND - ItemID: %d - SubCommand: %d - Value: %d\n", (int)LOWORD(wParam), (int)HIWORD(wParam), (int)lParam);
+			int ItemID = LOWORD(wParam), SubCommand = HIWORD(wParam);
 			HWND hWndItem = GetDlgItem(hwnd, ItemID);
 			int SelectionIndex = (int)SendMessageA(hWndItem, CB_GETCURSEL, 0, 0);
-			if (ItemID == 1001) ErrorDrawModes[EDC_ResolutionMismatch]  = (EErrorDrawMode)SelectionIndex;
-			if (ItemID == 1003) ErrorDrawModes[EDC_UnityNeverStarted]   = (EErrorDrawMode)SelectionIndex;
-			if (ItemID == 1005) ErrorDrawModes[EDC_UnitySendingStopped] = (EErrorDrawMode)SelectionIndex;
+			if (ItemID == 1001 && SubCommand == 1) ErrorDrawModes[EDC_ResolutionMismatch]  = (EErrorDrawMode)SelectionIndex;
+			if (ItemID == 1003 && SubCommand == 1) ErrorDrawModes[EDC_UnityNeverStarted]   = (EErrorDrawMode)SelectionIndex;
+			if (ItemID == 1005 && SubCommand == 1) ErrorDrawModes[EDC_UnitySendingStopped] = (EErrorDrawMode)SelectionIndex;
+			if (ItemID == 1007) SendMessage(hWndItem, BM_SETCHECK, ((OutputFrameRate ^= 1) ? BST_CHECKED : BST_UNCHECKED), 0);
 			return TRUE;
 		}
 		return FALSE;
@@ -560,7 +781,7 @@ private:
 		pPageInfo->pszTitle = (WCHAR*)CoTaskMemAlloc(sizeof(CaptureSourceName));
 		memcpy(pPageInfo->pszTitle, CaptureSourceName, sizeof(CaptureSourceName));
 		pPageInfo->size.cx      = 490;
-		pPageInfo->size.cy      = 100;
+		pPageInfo->size.cy      = 200;
 		pPageInfo->pszDocString = NULL;
 		pPageInfo->pszHelpFile  = NULL;
 		pPageInfo->dwHelpContext= 0;

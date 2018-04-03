@@ -34,16 +34,19 @@ public class UnityCapture : MonoBehaviour
     enum EMirrorMode { Disabled = 0, MirrorHorizontally = 1 }
     [System.Runtime.InteropServices.DllImport(DllName)] extern static System.IntPtr CaptureCreateInstance();
     [System.Runtime.InteropServices.DllImport(DllName)] extern static void CaptureDeleteInstance(System.IntPtr instance);
-    [System.Runtime.InteropServices.DllImport(DllName)] extern static ECaptureSendResult CaptureSendTexture(System.IntPtr instance, System.IntPtr nativetexture, EResizeMode ResizeMode, EMirrorMode MirrorMode);
+    [System.Runtime.InteropServices.DllImport(DllName)] extern static ECaptureSendResult CaptureSendTexture(System.IntPtr instance, System.IntPtr nativetexture, bool UseDoubleBuffering, EResizeMode ResizeMode, EMirrorMode MirrorMode);
     System.IntPtr CaptureInstance;
 
     [SerializeField] [Tooltip("Scale image if Unity and capture resolution don't match (can introduce frame dropping, not recommended)")] EResizeMode ResizeMode = EResizeMode.DisabledShowMessage;
     [SerializeField] [Tooltip("Mirror captured output image")] EMirrorMode MirrorMode = EMirrorMode.Disabled;
+    [SerializeField] [Tooltip("Introduce a frame of latency in favor of frame rate")] bool DoubleBuffering = false;
+    [SerializeField] [Tooltip("Check to enable VSync during capturing")] bool EnableVSync = false;
+    [SerializeField] [Tooltip("Set the desired render target frame rate")] int TargetFrameRate = 60;
 
     void Awake()
     {
-        QualitySettings.vSyncCount = 0;
-        Application.targetFrameRate = 60;
+        QualitySettings.vSyncCount = (EnableVSync ? 1 : 0);
+        Application.targetFrameRate = TargetFrameRate;
 
         if (Application.runInBackground == false)
         {
@@ -65,7 +68,7 @@ public class UnityCapture : MonoBehaviour
     void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
         Graphics.Blit(source, destination);
-        switch (CaptureSendTexture(CaptureInstance, source.GetNativeTexturePtr(), ResizeMode, MirrorMode))
+        switch (CaptureSendTexture(CaptureInstance, source.GetNativeTexturePtr(), DoubleBuffering, ResizeMode, MirrorMode))
         {
             case ECaptureSendResult.SUCCESS: break;
             case ECaptureSendResult.WARNING_FRAMESKIP:               Debug.LogWarning("[UnityCapture] Capture device did skip a frame read, capture frame rate will not match render frame rate."); break;
