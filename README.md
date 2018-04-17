@@ -45,11 +45,15 @@ with your desired capture output resolution.
 
 ### Settings
 
-There are two settings for the 'Unity Capture' behavior.
+There are a few settings for the 'Unity Capture' behavior.
 
 - 'Resize Mode': It is suggested to leave this disabled and just let your capture target application handle the display
   sizing/resizing because this setting can introduce frame skipping. So far only a very basic linear resize is supported.
 - 'Mirror Mode': This setting should also be handled by your target application if possible and needed, but it is available.
+- 'Double Buffering': See [performance caveats](#performance-caveats) below
+- 'Enable V Sync': Overwrite the state of the application v-sync setting during capturing
+- 'Target Frame Rate': Overwrite the application target fps setting during capture
+- 'Hide Warnings': Disable output of warning messages (but not errors)
 
 ### Possible errors/warnings
 
@@ -101,7 +105,7 @@ allows it, it is recommended to leave HDR off.
 
 The other is the setting 'DoubleBuffering' in the UnityCapture component.  
 Double buffering causes 1 frame of additional latency but improves the image data throughput.  
-You can check the Unity profiler for how much it inpacts performance in your project.
+You can check the Unity profiler for how much it impacts performance in your project.
 
 Otherwise it is recommended to leave scaling and mirroring disabled in the UnityCapture component.
 
@@ -110,7 +114,7 @@ Otherwise it is recommended to leave scaling and mirroring disabled in the Unity
 
 - Saving of the output device configuration
 - Support capturing multiple cameras separately
-- Bilinear resizing
+- Bilinear filtered resizing
 
 
 ## License

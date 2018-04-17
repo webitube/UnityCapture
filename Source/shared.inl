@@ -35,7 +35,7 @@ struct SharedImageMemory
 
 	~SharedImageMemory()
 	{
-		if (m_pMutex) delete m_pMutex;
+		if (m_hMutex) CloseHandle(m_hMutex);
 		if (m_hWantFrameEvent) CloseHandle(m_hWantFrameEvent);
 		if (m_hSentFrameEvent) CloseHandle(m_hSentFrameEvent);
 		if (m_hSharedFile) CloseHandle(m_hSharedFile);
@@ -49,28 +49,33 @@ struct SharedImageMemory
 
 	EReceiveResult Receive(ReceiveCallbackFunc callback, void* callback_data)
 	{
-		if (!Open(true)) return RECEIVERES_CAPTUREINACTIVE;
+		if (!Open(true) || !m_pSharedBuf->width) return RECEIVERES_CAPTUREINACTIVE;
 
 		SetEvent(m_hWantFrameEvent);
 		bool IsNewFrame = (WaitForSingleObject(m_hSentFrameEvent, 200) == WAIT_OBJECT_0);
 
-		m_pMutex->Lock();
+		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
 		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, m_pSharedBuf->rgbabits, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->data, callback_data);
-		m_pMutex->Unlock();
+		ReleaseMutex(m_hMutex); //unlock mutex
 
 		return (IsNewFrame ? RECEIVERES_NEWFRAME : RECEIVERES_OLDFRAME);
 	}
 
-	enum ESendResult { SENDRES_CAPTUREINACTIVE, SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
+	bool SendIsReady()
+	{
+		return Open(false);
+	}
+
+	enum ESendResult { SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
 	ESendResult Send(int width, int height, int stride, int rgbabits, EResizeMode resizemode, EMirrorMode mirrormode, const uint8_t* buffer)
 	{
 		UCASSERT(buffer);
-		if (!Open(false)) return SENDRES_CAPTUREINACTIVE;
+		UCASSERT(m_pSharedBuf);
 
 		DWORD DataSize = (DWORD)stride * (DWORD)height * 4 * (rgbabits / 8);
 		if (m_pSharedBuf->maxSize < DataSize) return SENDRES_TOOLARGE;
 
-		m_pMutex->Lock();
+		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
 		m_pSharedBuf->width = width;
 		m_pSharedBuf->height = height;
 		m_pSharedBuf->stride = stride;
@@ -78,7 +83,7 @@ struct SharedImageMemory
 		m_pSharedBuf->resizemode = resizemode;
 		m_pSharedBuf->mirrormode = mirrormode;
 		memcpy(m_pSharedBuf->data, buffer, DataSize);
-		m_pMutex->Unlock();
+		ReleaseMutex(m_hMutex); //unlock mutex
 
 		SetEvent(m_hSentFrameEvent);
 		bool DidSkipFrame = (WaitForSingleObject(m_hWantFrameEvent, 0) != WAIT_OBJECT_0);
@@ -91,16 +96,15 @@ private:
 	{
 		if (m_pSharedBuf) return true; //already open
 
-		if (!m_pMutex)
+		if (!m_hMutex)
 		{
-			HRESULT hr = S_OK;
-			m_pMutex = new SharedMutex(CS_NAME_MUTEX, ForReceiving, &hr);
-			if (FAILED(hr)) { delete m_pMutex; m_pMutex = NULL; }
-			if (!m_pMutex) return false;
+			if (ForReceiving) m_hMutex = CreateMutexA(NULL, FALSE,      CS_NAME_MUTEX);
+			else              m_hMutex = OpenMutexA(SYNCHRONIZE, FALSE, CS_NAME_MUTEX);
+			if (!m_hMutex) return false;
 		}
 
-		m_pMutex->Lock();
-		struct UnlockAtReturn { ~UnlockAtReturn() { m->Unlock(); }; SharedMutex* m; } cs = { m_pMutex };
+		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
+		struct UnlockAtReturn { ~UnlockAtReturn() { ReleaseMutex(m); }; HANDLE m; } cs = { m_hMutex };
 
 		if (!m_hWantFrameEvent)
 		{
@@ -127,20 +131,10 @@ private:
 		if (!m_pSharedBuf) return false;
 
 		if (ForReceiving && m_pSharedBuf->maxSize != MAX_SHARED_IMAGE_SIZE)
-		{
 			m_pSharedBuf->maxSize = MAX_SHARED_IMAGE_SIZE;
-		}
+
 		return true;
 	}
-
-	struct SharedMutex
-	{
-		SharedMutex(const char* name, bool create, HRESULT* phr) { *phr = (!(h = (create ? CreateMutexA(NULL, FALSE, name) : OpenMutexA(SYNCHRONIZE, FALSE, name))) ? E_UNEXPECTED : S_OK); }
-		~SharedMutex() { CloseHandle(h); }
-		void Lock() { WaitForSingleObject(h, INFINITE); }
-		void Unlock() { ReleaseMutex(h); }
-		private: HANDLE h;
-	};
 
 	struct SharedMemHeader
 	{
@@ -154,7 +148,7 @@ private:
 		uint8_t data[1];
 	};
 
-	SharedMutex* m_pMutex;
+	HANDLE m_hMutex;
 	HANDLE m_hWantFrameEvent;
 	HANDLE m_hSentFrameEvent;
 	HANDLE m_hSharedFile;

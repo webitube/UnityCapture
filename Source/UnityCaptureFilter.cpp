@@ -168,6 +168,7 @@ private:
 
 		inline void Execute()
 		{
+			UCASSERT(RowEnd > RowStart);
 			if      (Type == JOB_RGBA8toRGB8)       RGBA8toRGB8();
 			else if (Type == JOB_RGBA16toRGB8)      RGBA16toRGB8();
 			else if (Type == JOB_RESIZE_LINEAR)     ResizeLinear();
@@ -182,7 +183,7 @@ private:
 			{
 				//Handle a case where the texture pitch does have a gap on the right side
 				const uint32_t *srcLastRow = (const uint32_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
-				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; dst += dstPitch, src += srcStride)
+				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
 					for (size_t i = 0; i != iMax; i++, dst += 3)
 						*(uint32_t*)dst = _byteswap_ulong(src[i]) >> 8;
 				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
@@ -222,7 +223,7 @@ private:
 			{
 				//Handle a case where the texture pitch does have a gap on the right side
 				const uint64_t *srcLastRow = (const uint64_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
-				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; dst += dstPitch, src += srcStride)
+				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
 					for (size_t i = 0; i != iMax; i++, dst += 3)
 						*(uint32_t*)dst = RGBAF16toBGRU8(src + i);
 				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
@@ -262,10 +263,11 @@ private:
 			const double ay = (ah - (ResizeFromHeight / scale)) / 2.0;
 			const uint8_t *src = (const uint8_t*)BufIn, BlackPixel[3] = {0, 0, 0};
 			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3);
-			for (size_t y = RowStart, yEnd = RowEnd, isOffsetMax = ResizeFromHeight * ResizeFromPitch; y != RowEnd; y++)
+			for (size_t y = RowStart, yEnd = RowEnd, isMaxW = ResizeFromWidth, isOffsetMax = ResizeFromHeight * ResizeFromPitch; y != yEnd; y++)
 				for (size_t x = 0; x != w; x++, dst += 3)
 				{
-					size_t isx = (size_t)((x-ax)*scale), isy = (size_t)((y-ay)*scale), isOffset = isy * ResizeFromPitch + isx * 3;
+					const size_t isx = (size_t)((x-ax)*scale), isy = (size_t)((y-ay)*scale);
+					const size_t isOffset = (isx > isMaxW ? isOffsetMax : isy * ResizeFromPitch + isx * 3);
 					memcpy(dst, (isOffset >= isOffsetMax ? BlackPixel : src + isOffset), 3);
 				}
 		}

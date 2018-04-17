@@ -75,6 +75,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 {
 	if (!c || !TextureNativePtr) return RET_ERROR_PARAMETER;
 	if (g_GraphicsDeviceType != kUnityGfxRendererD3D11) return RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
+	if (!c->Sender->SendIsReady()) return RET_WARNING_CAPTUREINACTIVE;
 
 	//Get the active D3D11 context
 	ID3D11DeviceContext* ctx = NULL;
@@ -136,7 +137,6 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 
 	switch (res)
 	{
-		case SharedImageMemory::SENDRES_CAPTUREINACTIVE: return RET_WARNING_CAPTUREINACTIVE;
 		case SharedImageMemory::SENDRES_TOOLARGE:        return RET_ERROR_TOOLARGERESOLUTION;
 		case SharedImageMemory::SENDRES_WARN_FRAMESKIP:  return RET_WARNING_FRAMESKIP;
 	}

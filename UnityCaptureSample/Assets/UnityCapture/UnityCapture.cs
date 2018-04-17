@@ -28,13 +28,12 @@ using UnityEngine;
 [RequireComponent(typeof(Camera))]
 public class UnityCapture : MonoBehaviour
 {
-    const string DllName = "UnityCapturePlugin";
     enum ECaptureSendResult { SUCCESS = 0, WARNING_FRAMESKIP = 1, WARNING_CAPTUREINACTIVE = 2, ERROR_UNSUPPORTEDGRAPHICSDEVICE = 100, ERROR_PARAMETER = 101, ERROR_TOOLARGERESOLUTION = 102, ERROR_TEXTUREFORMAT = 103, ERROR_READTEXTURE = 104 };
     enum EResizeMode { DisabledShowMessage = 0, LinearResize = 1 }
     enum EMirrorMode { Disabled = 0, MirrorHorizontally = 1 }
-    [System.Runtime.InteropServices.DllImport(DllName)] extern static System.IntPtr CaptureCreateInstance();
-    [System.Runtime.InteropServices.DllImport(DllName)] extern static void CaptureDeleteInstance(System.IntPtr instance);
-    [System.Runtime.InteropServices.DllImport(DllName)] extern static ECaptureSendResult CaptureSendTexture(System.IntPtr instance, System.IntPtr nativetexture, bool UseDoubleBuffering, EResizeMode ResizeMode, EMirrorMode MirrorMode);
+    [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static System.IntPtr CaptureCreateInstance();
+    [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static void CaptureDeleteInstance(System.IntPtr instance);
+    [System.Runtime.InteropServices.DllImport("UnityCapturePlugin")] extern static ECaptureSendResult CaptureSendTexture(System.IntPtr instance, System.IntPtr nativetexture, bool UseDoubleBuffering, EResizeMode ResizeMode, EMirrorMode MirrorMode);
     System.IntPtr CaptureInstance;
 
     [SerializeField] [Tooltip("Scale image if Unity and capture resolution don't match (can introduce frame dropping, not recommended)")] EResizeMode ResizeMode = EResizeMode.DisabledShowMessage;
@@ -42,6 +41,7 @@ public class UnityCapture : MonoBehaviour
     [SerializeField] [Tooltip("Introduce a frame of latency in favor of frame rate")] bool DoubleBuffering = false;
     [SerializeField] [Tooltip("Check to enable VSync during capturing")] bool EnableVSync = false;
     [SerializeField] [Tooltip("Set the desired render target frame rate")] int TargetFrameRate = 60;
+    [SerializeField] [Tooltip("Check to disable output of warnings")] bool HideWarnings = false;
 
     void Awake()
     {
@@ -71,8 +71,8 @@ public class UnityCapture : MonoBehaviour
         switch (CaptureSendTexture(CaptureInstance, source.GetNativeTexturePtr(), DoubleBuffering, ResizeMode, MirrorMode))
         {
             case ECaptureSendResult.SUCCESS: break;
-            case ECaptureSendResult.WARNING_FRAMESKIP:               Debug.LogWarning("[UnityCapture] Capture device did skip a frame read, capture frame rate will not match render frame rate."); break;
-            case ECaptureSendResult.WARNING_CAPTUREINACTIVE:         Debug.LogWarning("[UnityCapture] Capture device is inactive"); break;
+            case ECaptureSendResult.WARNING_FRAMESKIP:               if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device did skip a frame read, capture frame rate will not match render frame rate."); break;
+            case ECaptureSendResult.WARNING_CAPTUREINACTIVE:         if (!HideWarnings) Debug.LogWarning("[UnityCapture] Capture device is inactive"); break;
             case ECaptureSendResult.ERROR_UNSUPPORTEDGRAPHICSDEVICE: Debug.LogError("[UnityCapture] Unsupported graphics device (only D3D11 supported)"); break;
             case ECaptureSendResult.ERROR_PARAMETER:                 Debug.LogError("[UnityCapture] Input parameter error"); break;
             case ECaptureSendResult.ERROR_TOOLARGERESOLUTION:        Debug.LogError("[UnityCapture] Render resolution is too large to send to capture device"); break;
