@@ -41,11 +41,12 @@ struct SharedImageMemory
 		if (m_hSharedFile) CloseHandle(m_hSharedFile);
 	}
 
+	enum EFormat { FORMAT_UINT8, FORMAT_FP16_GAMMA, FORMAT_FP16_LINEAR };
 	enum EResizeMode { RESIZEMODE_DISABLED = 0, RESIZEMODE_LINEAR = 1 };
 	enum EMirrorMode { MIRRORMODE_DISABLED = 0, MIRRORMODE_HORIZONTALLY = 1 };
 	enum EReceiveResult { RECEIVERES_CAPTUREINACTIVE, RECEIVERES_NEWFRAME, RECEIVERES_OLDFRAME };
 
-	typedef void (*ReceiveCallbackFunc)(int width, int height, int stride, int rgbabits, EResizeMode resizemode, EMirrorMode mirrormode, uint8_t* buffer, void* callback_data);
+	typedef void (*ReceiveCallbackFunc)(int width, int height, int stride, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, uint8_t* buffer, void* callback_data);
 
 	EReceiveResult Receive(ReceiveCallbackFunc callback, void* callback_data)
 	{
@@ -55,7 +56,7 @@ struct SharedImageMemory
 		bool IsNewFrame = (WaitForSingleObject(m_hSentFrameEvent, 200) == WAIT_OBJECT_0);
 
 		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
-		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, m_pSharedBuf->rgbabits, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->data, callback_data);
+		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, (EFormat)m_pSharedBuf->format, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->data, callback_data);
 		ReleaseMutex(m_hMutex); //unlock mutex
 
 		return (IsNewFrame ? RECEIVERES_NEWFRAME : RECEIVERES_OLDFRAME);
@@ -67,19 +68,17 @@ struct SharedImageMemory
 	}
 
 	enum ESendResult { SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
-	ESendResult Send(int width, int height, int stride, int rgbabits, EResizeMode resizemode, EMirrorMode mirrormode, const uint8_t* buffer)
+	ESendResult Send(int width, int height, int stride, DWORD DataSize, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, const uint8_t* buffer)
 	{
 		UCASSERT(buffer);
 		UCASSERT(m_pSharedBuf);
-
-		DWORD DataSize = (DWORD)stride * (DWORD)height * 4 * (rgbabits / 8);
 		if (m_pSharedBuf->maxSize < DataSize) return SENDRES_TOOLARGE;
 
 		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
 		m_pSharedBuf->width = width;
 		m_pSharedBuf->height = height;
 		m_pSharedBuf->stride = stride;
-		m_pSharedBuf->rgbabits = rgbabits;
+		m_pSharedBuf->format = format;
 		m_pSharedBuf->resizemode = resizemode;
 		m_pSharedBuf->mirrormode = mirrormode;
 		memcpy(m_pSharedBuf->data, buffer, DataSize);
@@ -142,7 +141,7 @@ private:
 		int width;
 		int height;
 		int stride;
-		int rgbabits;
+		int format;
 		int resizemode;
 		int mirrormode;
 		uint8_t data[1];

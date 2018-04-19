@@ -106,13 +106,15 @@ public:
 		m_pReceiver = new SharedImageMemory();
 		m_iUnscaledBufSize = 0;
 		m_pUnscaledBuf = NULL;
+		m_RGBA16Table = NULL;
 		GetMediaType(0, &m_mt);
 	}
 
 	virtual ~CCaptureStream()
 	{
 		delete m_pReceiver;
-		if (m_pUnscaledBuf) delete[] m_pUnscaledBuf;
+		if (m_pUnscaledBuf) free(m_pUnscaledBuf);
+		if (m_RGBA16Table) free(m_RGBA16Table);
 	}
 
 private:
@@ -165,6 +167,7 @@ private:
 		enum EType { JOB_NONE, JOB_RGBA8toRGB8, JOB_RGBA16toRGB8, JOB_RESIZE_LINEAR, JOB_MIRROR_HORIZONTAL } Type;
 		const void *BufIn; void *BufOut;
 		size_t Width, RowStart, RowEnd, RGBAInStride, ResizeToHeight, ResizeFromWidth, ResizeFromHeight;
+		const uint8_t* RGBA16Table;
 
 		inline void Execute()
 		{
@@ -214,9 +217,8 @@ private:
 		void RGBA16toRGB8()
 		{
 			//16 bit color downscaling (HDR (16 bit floats) to BGR)
-			float tmpf; uint16_t *tmpp, tmpr, tmpg, tmpb;
-			#define F16toU8(s) ((s) & 0x8000 ? 0 : (*(uint32_t*)&tmpf = ((s) << 13) + 0x38000000, tmpf < 1.0f ? (int)(tmpf * 255.99f) : 255))
-			#define RGBAF16toBGRU8(psrc) (tmpp = (uint16_t*)(psrc), tmpr = tmpp[0], tmpg = tmpp[1], tmpb = tmpp[2], (F16toU8(tmpr)<<16) | (F16toU8(tmpg)<<8) | F16toU8(tmpb))
+			const uint8_t* ttbl = RGBA16Table;
+			#define RGBAF16toBGRU8(psrc) ((ttbl[((uint16_t*)(psrc))[0]]<<16) | (ttbl[((uint16_t*)(psrc))[1]]<<8) | ttbl[((uint16_t*)(psrc))[2]])
 			const uint64_t *src = (const uint64_t*)BufIn + (RowStart * RGBAInStride);
 			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
 			if (RGBAInStride != Width)
@@ -250,7 +252,6 @@ private:
 			//For the final pixel we can't use 4 byte uint32_t copy so we call memcpy
 			uint32_t FinalPixel = RGBAF16toBGRU8(src);
 			memcpy(dst, &FinalPixel, 3);
-			#undef F16toU8
 			#undef RGBAF16toBGRU8
 		}
 
@@ -349,7 +350,7 @@ private:
 		CCaptureStream* Owner;
 	};
 
-	static void ProcessImage(int InWidth, int InHeight, int InStride, int InRGBABits, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, uint8_t* InBuf, ProcessState* State)
+	static void ProcessImage(int InWidth, int InHeight, int InStride, SharedImageMemory::EFormat Format, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, uint8_t* InBuf, ProcessState* State)
 	{
 		const bool NeedResize = (InWidth != State->BufWidth || InHeight != State->BufHeight);
 		if (NeedResize && ResizeMode == SharedImageMemory::RESIZEMODE_DISABLED)
@@ -372,18 +373,34 @@ private:
 			DWORD UnscaledBufSize = (InWidth * InHeight * 3);
 			if (State->Owner->m_iUnscaledBufSize != UnscaledBufSize)
 			{
-				if (State->Owner->m_pUnscaledBuf) delete[] State->Owner->m_pUnscaledBuf;
-				State->Owner->m_pUnscaledBuf = new uint8_t[UnscaledBufSize];
+				if (State->Owner->m_pUnscaledBuf) free(State->Owner->m_pUnscaledBuf);
+				State->Owner->m_pUnscaledBuf = (uint8_t*)malloc(UnscaledBufSize);
 				State->Owner->m_iUnscaledBufSize = UnscaledBufSize;
 			}
 		}
 
+		if (Format != SharedImageMemory::FORMAT_UINT8 && (!State->Owner->m_RGBA16Table || State->Owner->m_RGBA16TableFormat != Format))
+		{
+			//Build a 64k table that maps 16 bit float values (either linear SRGB or gamma RGB) to 8 bit color values
+			const bool SRGB = (Format == SharedImageMemory::FORMAT_FP16_LINEAR);
+			uint8_t* RGBA16Table = State->Owner->m_RGBA16Table;
+			if (!RGBA16Table) RGBA16Table = State->Owner->m_RGBA16Table = (uint8_t*)malloc(0xFFFF+1);
+			for(int i = 0; i <= 0xFFFF; i++)
+			{
+				float f;
+				(i & 0x8000 ? f = 0 : (*(uint32_t*)&f = (i << 13) + 0x38000000));
+				if (SRGB) f = (f <= 0.0031308f ? (f * 12.92f) : (powf(f, 1.0f / 2.4f) * 1.055f - 0.055f));
+				RGBA16Table[i] = (f < 1.0f ? (uint8_t)(f * 255.9999f) : 255);
+			}
+			State->Owner->m_RGBA16TableFormat = Format;
+		}
+
 		//Multi-threaded conversion of RGBA source to 8-bit BGR format while also eliminating possible row gaps (when stride != width)
-		UCASSERT(InRGBABits == 8 || InRGBABits == 16);
 		ProcessJob Job;
-		Job.Type = (InRGBABits == 8 ? ProcessJob::JOB_RGBA8toRGB8 : ProcessJob::JOB_RGBA16toRGB8);
+		Job.Type = (Format == SharedImageMemory::FORMAT_UINT8 ? ProcessJob::JOB_RGBA8toRGB8 : ProcessJob::JOB_RGBA16toRGB8);
 		Job.BufIn = InBuf, Job.BufOut = (NeedResize ? State->Owner->m_pUnscaledBuf : State->Buf);
 		Job.Width = InWidth, Job.RowStart = 0, Job.RowEnd = InHeight, Job.RGBAInStride = InStride;
+		Job.RGBA16Table = State->Owner->m_RGBA16Table;
 		State->Owner->m_ProcessWorkers.StartNewJob(Job);
 
 		if (NeedResize)
@@ -666,7 +683,7 @@ private:
 		pMediaType->SetTemporalCompression(FALSE);
 		return S_OK;
 	}
-		
+
 	HRESULT OnThreadStartPlay() override
 	{
 		DebugLog("[OnThreadStartPlay] OnThreadStartPlay\n");
@@ -681,7 +698,8 @@ private:
 	SharedImageMemory* m_pReceiver;
 	ProcessWorkers m_ProcessWorkers;
 	DWORD m_iUnscaledBufSize;
-	BYTE* m_pUnscaledBuf;
+	uint8_t *m_pUnscaledBuf, *m_RGBA16Table;
+	SharedImageMemory::EFormat m_RGBA16TableFormat;
 
 	//IAMStreamControl
 	HRESULT STDMETHODCALLTYPE StartAt(const REFERENCE_TIME *ptStart, DWORD dwCookie) override { return NOERROR; }

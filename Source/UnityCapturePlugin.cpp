@@ -71,7 +71,7 @@ extern "C" __declspec(dllexport) void CaptureDeleteInstance(UnityCaptureInstance
 	delete c;
 }
 
-extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode)
+extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace)
 {
 	if (!c || !TextureNativePtr) return RET_ERROR_PARAMETER;
 	if (g_GraphicsDeviceType != kUnityGfxRendererD3D11) return RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
@@ -120,10 +120,10 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	ID3D11Texture2D* ReadTexture  = c->Textures[c->UseDoubleBuffering && !c->AlternativeBuffer ? 1 : 0];
 
 	//Check texture format
-	int RGBABits = 0;
-	if (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || desc.Format == DXGI_FORMAT_R8G8B8A8_UINT || desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) RGBABits = 8;
-	if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) RGBABits = 16;
-	if (!RGBABits) return RET_ERROR_TEXTUREFORMAT;
+	SharedImageMemory::EFormat Format;
+	if      (desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || desc.Format == DXGI_FORMAT_R8G8B8A8_UINT || desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) Format = SharedImageMemory::FORMAT_UINT8;
+	else if (desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || desc.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS) Format = (IsLinearColorSpace ? SharedImageMemory::FORMAT_FP16_LINEAR : SharedImageMemory::FORMAT_FP16_GAMMA);
+	else return RET_ERROR_TEXTUREFORMAT;
 
 	//Copy render texture to texture with CPU access and map the image data to RAM
 	ctx->CopyResource(WriteTexture, d3dtex);
@@ -131,7 +131,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	if (FAILED(ctx->Map(ReadTexture, 0, D3D11_MAP_READ, NULL, &mapResource))) return RET_ERROR_READTEXTURE;
 
 	//Push the captured data to the direct show filter
-	SharedImageMemory::ESendResult res = c->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (RGBABits / 2), RGBABits, ResizeMode, MirrorMode, (const unsigned char*)mapResource.pData);
+	SharedImageMemory::ESendResult res = c->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (Format == SharedImageMemory::FORMAT_UINT8 ? 4 : 8), mapResource.RowPitch * desc.Height, Format, ResizeMode, MirrorMode, (const unsigned char*)mapResource.pData);
 
 	ctx->Unmap(ReadTexture, 0);
 
