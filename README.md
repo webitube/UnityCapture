@@ -9,6 +9,7 @@ In more simple terms, it essentially makes Unity simulate a web cam device on Wi
 
 This project is based on [UnityCam by Yamen Saraiji](//github.com/mrayy/UnityCam) with added features and big performance
 improvements. It supports lag-free 1080p at 60 FPS on moderate PCs and can handle 4K resolutions on a faster PC.
+It also supports capturing alpha channel (transparency) in receiving applications that support it (like [OBS](https://obsproject.com/)).
 
 
 ## Installation
@@ -74,8 +75,14 @@ There are a few settings for the 'Unity Capture' behavior.
 
 ## Output Device Configuration
 
-There are four settings in the configuration panel offered by the capture device. Some applications like OBS allow you to access
-these settings with a 'Configure Video' button, other applications like web browsers don't.
+In your receiving application mainly two settings are of relevance.
+Depending on the application, the settings might be named different or not available at all in which case it will fall back to a default.
+ - Resolution: Set this to match the rendering resolution in Unity
+ - Video Format: Set this to ARGB if you want to capture the alpha channel (transparency).
+Other settings like FPS, color space or buffering are irrelevant as the output from Unity controls these parameters.
+
+There are four additional settings in the configuration panel offered by the capture device. Some applications like OBS allow you to access
+these settings with a 'Configure Video' button, other applications like web browsers might not.
 
 These settings control what will be displayed in the output in case of an error:
 - 'Resolution mismatch': When resizing in the Unity behavior is disabled and the capture output and the rendering resolutions don't match.
@@ -88,7 +95,9 @@ There are four modes that can be set for the settings above:
 - 'Green/Yellow Pattern': A pattern that is green and yellow.
 - 'Green Key (RGB #00FE00)': Fills the output with a specific color (red and blue at 0, green at 254).
   This can be used for instance in OBS with the 'Color Key' video filter to show a layer behind the video capture.
-  You can use this if you want to show a 'Please stand by...' image layer while Unity stopped.
+  You can use this if you want to show a 'Please stand by...' image layer when Unity is stopped.
+
+The settings 'Fill Black' and 'Green Key' are shown as completely transparent when capturing with alpha channel.
 
 For the two colored patterns an additional text message will be displayed detailing the error.
 
@@ -101,7 +110,7 @@ There are two main improvements to capture stream frame rate.
 
 One is to disable the camera setting 'Allow HDR' which causes the camera output texture format
 to be in a favorable format (8-bit integer per color per pixel). If your shaders and post-processing
-allows it, it is recommended to leave HDR off.
+allow it, it's recommended to leave HDR off.
 
 The other is the setting 'DoubleBuffering' in the UnityCapture component.  
 Double buffering causes 1 frame of additional latency but improves the image data throughput.  

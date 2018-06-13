@@ -135,7 +135,7 @@ private:
 		if (FAILED(hr = pSamp->SetTime(&startTime, &endTime))) return hr;
 		if (FAILED(hr = pSamp->SetMediaTime(&mtStart, &mtEnd))) return hr;
 
-		ProcessState State = { pBuf, pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight, this };
+		ProcessState State = { pBuf, pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight, pvi->bmiHeader.biBitCount / 8, this };
 		switch (m_pReceiver->Receive((SharedImageMemory::ReceiveCallbackFunc)ProcessImage, &State))
 		{
 			case SharedImageMemory::RECEIVERES_CAPTUREINACTIVE:{
@@ -164,7 +164,7 @@ private:
 
 	struct ProcessJob
 	{
-		enum EType { JOB_NONE, JOB_RGBA8toRGB8, JOB_RGBA16toRGB8, JOB_RESIZE_LINEAR, JOB_MIRROR_HORIZONTAL } Type;
+		enum EType { JOB_NONE, JOB_RGBA8toBGR8, JOB_RGBA8toBGRA8, JOB_RGBA16toBGR8, JOB_RGBA16toBGRA8, JOB_BGR_RESIZE_LINEAR, JOB_BGRA_RESIZE_LINEAR, JOB_BGR_MIRROR_HORIZONTAL, JOB_BGRA_MIRROR_HORIZONTAL } Type;
 		const void *BufIn; void *BufOut;
 		size_t Width, RowStart, RowEnd, RGBAInStride, ResizeToHeight, ResizeFromWidth, ResizeFromHeight;
 		const uint8_t* RGBA16Table;
@@ -172,13 +172,17 @@ private:
 		inline void Execute()
 		{
 			UCASSERT(RowEnd > RowStart);
-			if      (Type == JOB_RGBA8toRGB8)       RGBA8toRGB8();
-			else if (Type == JOB_RGBA16toRGB8)      RGBA16toRGB8();
-			else if (Type == JOB_RESIZE_LINEAR)     ResizeLinear();
-			else if (Type == JOB_MIRROR_HORIZONTAL) MirrorHorizontal();
+			if      (Type == JOB_RGBA8toBGR8)            RGBA8toBGR8();
+			else if (Type == JOB_RGBA8toBGRA8)           RGBA8toBGRA8();
+			else if (Type == JOB_RGBA16toBGR8)           RGBA16toBGR8();
+			else if (Type == JOB_RGBA16toBGRA8)          RGBA16toBGRA8();
+			else if (Type == JOB_BGR_RESIZE_LINEAR)      BGRResizeLinear();
+			else if (Type == JOB_BGRA_RESIZE_LINEAR)     BGRAResizeLinear();
+			else if (Type == JOB_BGR_MIRROR_HORIZONTAL)  BGRMirrorHorizontal();
+			else if (Type == JOB_BGRA_MIRROR_HORIZONTAL) BGRAMirrorHorizontal();
 		}
 
-		void RGBA8toRGB8()
+		void RGBA8toBGR8()
 		{
 			const uint32_t *src = (const uint32_t*)BufIn + (RowStart * RGBAInStride);
 			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
@@ -186,7 +190,7 @@ private:
 			{
 				//Handle a case where the texture pitch does have a gap on the right side
 				const uint32_t *srcLastRow = (const uint32_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
-				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
+				for (size_t srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
 					for (size_t i = 0; i != iMax; i++, dst += 3)
 						*(uint32_t*)dst = _byteswap_ulong(src[i]) >> 8;
 				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
@@ -214,7 +218,41 @@ private:
 			memcpy(dst, &FinalPixel, 3);
 		}
 
-		void RGBA16toRGB8()
+		void RGBA8toBGRA8()
+		{
+			#define RGBATOBGRA(x) ((x&0xFF00FF00)|((x&0x00FF0000)>>16)|((x&0x000000FF)<<16))
+			const uint32_t *src = (const uint32_t*)BufIn + (RowStart * RGBAInStride);
+			uint32_t *dst = (uint32_t*)BufOut + (RowStart * Width), *dstEnd = (uint32_t*)BufOut + (RowEnd * Width);
+			if (RGBAInStride != Width)
+			{
+				//Handle a case where the texture pitch does have a gap on the right side
+				const uint32_t *srcEnd = (const uint32_t*)BufIn + ((RowEnd) * RGBAInStride);
+				for (size_t srcStride = RGBAInStride, iMax = Width; src != srcEnd; src += srcStride)
+					for (size_t i = 0; i != iMax; i++, dst++)
+						*dst = RGBATOBGRA(src[i]);
+			}
+			else
+			{
+				//The fastest (implemented) path to convert from RGBA to BGR
+				const uint32_t *srcEnd8 = src + (((RowEnd-RowStart)*Width)&~7), *srcEnd1 = src + ((RowEnd-RowStart)*Width);
+				for (; src != srcEnd8; dst += 8, src += 8)
+				{
+					dst[0] = RGBATOBGRA(src[0]);
+					dst[1] = RGBATOBGRA(src[1]);
+					dst[2] = RGBATOBGRA(src[2]);
+					dst[3] = RGBATOBGRA(src[3]);
+					dst[4] = RGBATOBGRA(src[4]);
+					dst[5] = RGBATOBGRA(src[5]);
+					dst[6] = RGBATOBGRA(src[6]);
+					dst[7] = RGBATOBGRA(src[7]);
+				}
+				for (; src != srcEnd1; dst++, src++)
+					*dst = RGBATOBGRA(*src);
+			}
+			#undef RGBATOBGRA
+		}
+
+		void RGBA16toBGR8()
 		{
 			//16 bit color downscaling (HDR (16 bit floats) to BGR)
 			const uint8_t* ttbl = RGBA16Table;
@@ -225,7 +263,7 @@ private:
 			{
 				//Handle a case where the texture pitch does have a gap on the right side
 				const uint64_t *srcLastRow = (const uint64_t*)BufIn + ((RowEnd - 1) * RGBAInStride);
-				for (size_t dstPitch = Width * 3, srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
+				for (size_t srcStride = RGBAInStride, iMax = Width; src != srcLastRow; src += srcStride)
 					for (size_t i = 0; i != iMax; i++, dst += 3)
 						*(uint32_t*)dst = RGBAF16toBGRU8(src + i);
 				for (size_t i = 0, iMax = Width - 1; i != iMax; i++, dst += 3, src++)
@@ -255,9 +293,45 @@ private:
 			#undef RGBAF16toBGRU8
 		}
 
-		void ResizeLinear()
+		void RGBA16toBGRA8()
 		{
-			const size_t w = Width, h = ResizeToHeight, pitch = w * 3, ResizeFromPitch = ResizeFromWidth * 3;
+			//16 bit color downscaling (HDR (16 bit floats) to BGRA)
+			const uint8_t* ttbl = RGBA16Table;
+			#define RGBAF16toBGRAU8(psrc) ((ttbl[((uint16_t*)(psrc))[3]]<<24) | (ttbl[((uint16_t*)(psrc))[0]]<<16) | (ttbl[((uint16_t*)(psrc))[1]]<<8) | ttbl[((uint16_t*)(psrc))[2]])
+			const uint64_t *src = (const uint64_t*)BufIn + (RowStart * RGBAInStride);
+			uint32_t *dst = (uint32_t*)BufOut + (RowStart * Width), *dstEnd = (uint32_t*)BufOut + (RowEnd * Width);
+			if (RGBAInStride != Width)
+			{
+				//Handle a case where the texture pitch does have a gap on the right side
+				const uint64_t *srcEnd = (const uint64_t*)BufIn + (RowEnd * RGBAInStride);
+				for (size_t srcStride = RGBAInStride, iMax = Width; src != srcEnd; src += srcStride)
+					for (size_t i = 0; i != iMax; i++, dst++)
+						*dst = RGBAF16toBGRAU8(src + i);
+			}
+			else
+			{
+				//The fastest (implemented) path to convert from RGBA to BGR
+				const uint64_t *srcEnd8 = src + (((RowEnd-RowStart)*Width-1)&~7), *srcEnd1 = src + ((RowEnd-RowStart)*Width-1);
+				for (; src != srcEnd8; dst += 8, src += 8)
+				{
+					dst[0] = RGBAF16toBGRAU8(src    );
+					dst[1] = RGBAF16toBGRAU8(src + 1);
+					dst[2] = RGBAF16toBGRAU8(src + 2);
+					dst[3] = RGBAF16toBGRAU8(src + 3);
+					dst[4] = RGBAF16toBGRAU8(src + 4);
+					dst[5] = RGBAF16toBGRAU8(src + 5);
+					dst[6] = RGBAF16toBGRAU8(src + 6);
+					dst[7] = RGBAF16toBGRAU8(src + 7);
+				}
+				for (; src != srcEnd1; dst++, src++)
+					*dst = RGBAF16toBGRAU8(src);
+			}
+			#undef RGBAF16toBGRAU8
+		}
+
+		void BGRResizeLinear()
+		{
+			const size_t w = Width, h = ResizeToHeight, ResizeFromPitch = ResizeFromWidth * 3;
 			const double aw = (double)w, ah = (double)h;
 			const double scale = max(ResizeFromWidth / aw, ResizeFromHeight / ah);
 			const double ax = (aw - (ResizeFromWidth  / scale)) / 2.0;
@@ -273,12 +347,39 @@ private:
 				}
 		}
 
-		void MirrorHorizontal()
+		void BGRAResizeLinear()
+		{
+			const size_t w = Width, h = ResizeToHeight, fromw = ResizeFromWidth;
+			const double aw = (double)w, ah = (double)h;
+			const double scale = max(ResizeFromWidth / aw, ResizeFromHeight / ah);
+			const double ax = (aw - (ResizeFromWidth  / scale)) / 2.0;
+			const double ay = (ah - (ResizeFromHeight / scale)) / 2.0;
+			const uint32_t *src = (const uint32_t*)BufIn;
+			uint32_t *dst = (uint32_t*)BufOut + (RowStart * Width);
+			for (size_t y = RowStart, yEnd = RowEnd, isMaxW = ResizeFromWidth, isOffsetMax = ResizeFromHeight * fromw; y != yEnd; y++)
+				for (size_t x = 0; x != w; x++, dst++)
+				{
+					const size_t isx = (size_t)((x-ax)*scale), isy = (size_t)((y-ay)*scale);
+					const size_t isOffset = (isx > isMaxW ? isOffsetMax : isy * fromw + isx);
+					*dst = (isOffset >= isOffsetMax ? 0 : src[isOffset]);
+				}
+			UCASSERT(dst ==  (uint32_t*)BufOut + (RowEnd * Width));
+		}
+
+		void BGRMirrorHorizontal()
 		{
 			uint8_t *dst = (uint8_t*)BufOut + (RowStart * Width * 3), *dstEnd = (uint8_t*)BufOut + (RowEnd * Width * 3);
 			for (size_t dstPitch = Width * 3; dst != dstEnd; dst += dstPitch)
 				for (uint8_t tmp[3], *dstA = dst, *dstB = dst + dstPitch - 3; dstA < dstB; dstA += 3, dstB -= 3)
 					memcpy(tmp, dstA, 3), memcpy(dstA, dstB, 3), memcpy(dstB, tmp, 3);
+		}
+
+		void BGRAMirrorHorizontal()
+		{
+			uint32_t *dst = (uint32_t*)BufOut + (RowStart * Width), *dstEnd = (uint32_t*)BufOut + (RowEnd * Width);
+			for (size_t w = Width; dst != dstEnd; dst += w)
+				for (uint32_t tmp, *dstA = dst, *dstB = dst + w - 1; dstA < dstB; dstA++, dstB--)
+					tmp = *dstA, *dstA = *dstB, *dstB = tmp;
 		}
 	};
 
@@ -346,7 +447,7 @@ private:
 	struct ProcessState
 	{
 		uint8_t* Buf;
-		int BufWidth, BufHeight;
+		int BufWidth, BufHeight, BufBPP;
 		CCaptureStream* Owner;
 	};
 
@@ -370,7 +471,7 @@ private:
 		if (NeedResize)
 		{
 			//Prepare buffer for image scaling
-			DWORD UnscaledBufSize = (InWidth * InHeight * 3);
+			DWORD UnscaledBufSize = (InWidth * InHeight * State->BufBPP);
 			if (State->Owner->m_iUnscaledBufSize != UnscaledBufSize)
 			{
 				if (State->Owner->m_pUnscaledBuf) free(State->Owner->m_pUnscaledBuf);
@@ -397,7 +498,8 @@ private:
 
 		//Multi-threaded conversion of RGBA source to 8-bit BGR format while also eliminating possible row gaps (when stride != width)
 		ProcessJob Job;
-		Job.Type = (Format == SharedImageMemory::FORMAT_UINT8 ? ProcessJob::JOB_RGBA8toRGB8 : ProcessJob::JOB_RGBA16toRGB8);
+		if (State->BufBPP == 4) Job.Type = (Format == SharedImageMemory::FORMAT_UINT8 ? ProcessJob::JOB_RGBA8toBGRA8 : ProcessJob::JOB_RGBA16toBGRA8);
+		else                    Job.Type = (Format == SharedImageMemory::FORMAT_UINT8 ? ProcessJob::JOB_RGBA8toBGR8  : ProcessJob::JOB_RGBA16toBGR8 );
 		Job.BufIn = InBuf, Job.BufOut = (NeedResize ? State->Owner->m_pUnscaledBuf : State->Buf);
 		Job.Width = InWidth, Job.RowStart = 0, Job.RowEnd = InHeight, Job.RGBAInStride = InStride;
 		Job.RGBA16Table = State->Owner->m_RGBA16Table;
@@ -406,7 +508,7 @@ private:
 		if (NeedResize)
 		{
 			//Multi-threaded image scaling
-			Job.Type = ProcessJob::JOB_RESIZE_LINEAR;
+			Job.Type = (State->BufBPP == 4 ? ProcessJob::JOB_BGRA_RESIZE_LINEAR : ProcessJob::JOB_BGR_RESIZE_LINEAR);
 			Job.BufIn = State->Owner->m_pUnscaledBuf, Job.BufOut = State->Buf;
 			Job.Width = State->BufWidth, Job.RowStart = 0, Job.RowEnd = State->BufHeight;
 			Job.ResizeToHeight = State->BufHeight, Job.ResizeFromWidth = InWidth, Job.ResizeFromHeight = InHeight;
@@ -416,7 +518,7 @@ private:
 		if (MirrorMode == SharedImageMemory::MIRRORMODE_HORIZONTALLY)
 		{
 			//Multi-threaded horizontal image flipping
-			Job.Type = ProcessJob::JOB_MIRROR_HORIZONTAL;
+			Job.Type = (State->BufBPP == 4 ? ProcessJob::JOB_BGRA_MIRROR_HORIZONTAL : ProcessJob::JOB_BGR_MIRROR_HORIZONTAL);
 			Job.BufOut = State->Buf;
 			Job.Width = State->BufWidth, Job.RowStart = 0, Job.RowEnd = State->BufHeight;
 			State->Owner->m_ProcessWorkers.StartNewJob(Job);
@@ -426,29 +528,34 @@ private:
 	static void FillErrorPattern(EErrorDrawMode edm, ProcessState* State, int LineCount = 0, char** LineStrings = NULL, int* LineLengths = NULL, LONGLONG FrameNumber = -1)
 	{
 		if (FrameNumber >= 0 && FrameNumber < 5) edm = EDM_BLACK; //show errors as just black during the first 5 frames (when starting)
-		BYTE *p = State->Buf, *pEnd = State->Buf + (State->BufWidth * State->BufHeight * 3);
+		BYTE *p = State->Buf, *pEnd = State->Buf + (State->BufWidth * State->BufHeight * State->BufBPP), SkipCount = State->BufBPP - 3;
 		switch (edm)
 		{
-			case EDM_GREENKEY:    while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFE; *(p++) = 0x00; } break; //Filled with 0x00FE00 (BGR colors)
-			case EDM_GREENYELLOW: while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFF; *(p++) = (size_t)p%0xFF; } break; //Green/yellow color pattern (BGR colors)
-			case EDM_BLUEPINK:    while (p != pEnd) { *(p++) = 0xFF; *(p++) = 0x00; *(p++) = (size_t)p%0xFF; } break; //Blue/pink color pattern (BGR colors)
-			case EDM_BLACK:       ZeroMemory(State->Buf, (State->BufWidth * State->BufHeight * 3)); break; //Filled with black
+			case EDM_GREENKEY:    while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFE; *(p++) = 0x00;           p += SkipCount; } break; //Filled with 0x00FE00 (BGR colors)
+			case EDM_GREENYELLOW: while (p != pEnd) { *(p++) = 0x00; *(p++) = 0xFF; *(p++) = (size_t)p%0xFF; p += SkipCount; } break; //Green/yellow color pattern (BGR colors)
+			case EDM_BLUEPINK:    while (p != pEnd) { *(p++) = 0xFF; *(p++) = 0x00; *(p++) = (size_t)p%0xFF; p += SkipCount; } break; //Blue/pink color pattern (BGR colors)
+			case EDM_BLACK:       ZeroMemory(State->Buf, (State->BufWidth * State->BufHeight * State->BufBPP)); break; //Filled with black
 		}
 
 		if (LineCount && edm != EDM_BLACK && edm != EDM_GREENKEY)
 		{
 			void* pTextBuf;
 			HDC TextDC = CreateCompatibleDC(0);
-			BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, LineCount * 20, 1, 8 * 3, 0, LineCount * 20 * State->BufWidth * 3 };
+			BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, LineCount * 20, 1, 8 * State->BufBPP, 0, LineCount * 20 * State->BufWidth * State->BufBPP };
 			TextBMI.bmiHeader.biHeight = LineCount * 20;
 			HBITMAP TextHBitmap = CreateDIBSection(TextDC, &TextBMI, DIB_RGB_COLORS, &pTextBuf, NULL, 0);
 			SelectObject(TextDC, TextHBitmap);
 			SetBkMode(TextDC, TRANSPARENT);
 			SetTextColor(TextDC, RGB(255, 0, 0));
 			for (int i = 0; i < LineCount; i++) TextOutA(TextDC, 10,  i * 20, LineStrings[i], LineLengths[i]);
-			memcpy(State->Buf + ((State->BufHeight - TextBMI.bmiHeader.biHeight) / 2) * State->BufWidth * 3, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * 3);
+			memcpy(State->Buf + ((State->BufHeight - TextBMI.bmiHeader.biHeight) / 2) * State->BufWidth * State->BufBPP, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * State->BufBPP);
 			DeleteObject(TextHBitmap);
 			DeleteDC(TextDC);
+		}
+		if (State->BufBPP == 4)
+		{
+			BYTE FillAlpha = (edm == EDM_GREENKEY ? 0x0 : (edm == EDM_BLACK ? 0x0 : 0xA0));
+			for (p = State->Buf; p != pEnd; p += 4) p[3] = FillAlpha;
 		}
 	}
 
@@ -461,13 +568,14 @@ private:
 
 		void* pTextBuf;
 		HDC TextDC = CreateCompatibleDC(0);
-		BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, 20, 1, 8 * 3, 0, 20 * State->BufWidth * 3 };
+		BITMAPINFO TextBMI = { sizeof(BITMAPINFOHEADER), State->BufWidth, 20, 1, 8 * State->BufBPP, 0, 20 * State->BufWidth * State->BufBPP };
 		HBITMAP TextHBitmap = CreateDIBSection(TextDC, &TextBMI, DIB_RGB_COLORS, &pTextBuf, NULL, 0);
 		SelectObject(TextDC, TextHBitmap);
 		SetBkMode(TextDC, TRANSPARENT);
 		SetTextColor(TextDC, RGB(0, 255, 0));
 		TextOutA(TextDC, 10, 0, DisplayString, DisplayStringLen);
-		memcpy(State->Buf, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * 3);
+		if (State->BufBPP == 4) for (BYTE *p = (BYTE*)pTextBuf, *pEnd = p + 20 * State->BufWidth * 4; p != pEnd; p += 4) p[3] = 0xFF;
+		memcpy(State->Buf, pTextBuf, TextBMI.bmiHeader.biHeight * State->BufWidth * State->BufBPP);
 		DeleteObject(TextHBitmap);
 		DeleteDC(TextDC);
 	}
@@ -563,7 +671,7 @@ private:
 		if (pvi == NULL) DebugLog("[SetFormat] E_UNEXPECTED\n");
 		if (pvi == NULL) return E_UNEXPECTED;
 
-		DebugLog("[SetFormat] WIDTH: %d - HEIGHT: %d - TPS: %d - SIZE: %d - SIZE CALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->AvgTimePerFrame,
+		DebugLog("[SetFormat] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZE: %d - SIZE CALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame,
 			(int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
 		if (pvi->bmiHeader.biSizeImage != DIBSIZE(pvi->bmiHeader)) return E_FAIL;
 		m_avgTimePerFrame = pvi->AvgTimePerFrame;
@@ -575,7 +683,7 @@ private:
 	{
 		if (ppmt == NULL) DebugLog("[GetFormat] E_POINTER\n");
 		if (ppmt == NULL) return E_POINTER;
-		DebugLog("[GetFormat] RETURNING WIDTH: %d - HEIGHT: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
+		DebugLog("[GetFormat] RETURNING WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biBitCount, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
 		*ppmt = CreateMediaType(&m_mt);
 		return S_OK;
 	}
@@ -584,7 +692,7 @@ private:
 	{
 		if (piCount == NULL || piSize == NULL) DebugLog("[GetNumberOfCapabilities] E_POINTER\n");
 		if (piCount == NULL || piSize == NULL) return E_POINTER;
-		*piCount = (sizeof(_media)/sizeof(_media[0]));
+		*piCount = (sizeof(_media)/sizeof(_media[0])*2); //RGB and RGBA variations
 		*piSize = sizeof(VIDEO_STREAM_CONFIG_CAPS);
 		DebugLog("[GetNumberOfCapabilities] Returning Count: %d - Size: %d\n", *piCount, *piSize);
 		return S_OK;
@@ -599,7 +707,7 @@ private:
 		HRESULT hr = GetMediaType(iIndex, &mt);
 		if (FAILED(hr)) return hr;
 		VIDEOINFO *pvi = (VIDEOINFO*)mt.Format();
-		DebugLog("[GetStreamCaps] Index: %d - WIDTH: %d - HEIGHT: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", iIndex, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
+		DebugLog("[GetStreamCaps] Index: %d - WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", iIndex, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
 
 		*ppmt = CreateMediaType(&mt);
 
@@ -630,15 +738,15 @@ private:
 		pCaps->MaxOutputSize.cy   = pvi->bmiHeader.biHeight;
 		pCaps->MinFrameInterval = 10000000 / 120;
 		pCaps->MaxFrameInterval = 10000000 / 30;
-		pCaps->MinBitsPerSecond = pCaps->MinOutputSize.cx * pCaps->MinOutputSize.cy * 3 * 8 * 30;
-		pCaps->MaxBitsPerSecond = pCaps->MaxOutputSize.cx * pCaps->MaxOutputSize.cy * 3 * 8 * 120;
+		pCaps->MinBitsPerSecond = pCaps->MinOutputSize.cx * pCaps->MinOutputSize.cy * pvi->bmiHeader.biBitCount * 30;
+		pCaps->MaxBitsPerSecond = pCaps->MaxOutputSize.cx * pCaps->MaxOutputSize.cy * pvi->bmiHeader.biBitCount * 120;
 		return S_OK;
 	}
 
 	HRESULT SetMediaType(const CMediaType *pmt) override
 	{
 		VIDEOINFOHEADER* pvi = (VIDEOINFOHEADER*)(pmt->Format());
-		DebugLog("[SetMediaType] WIDTH: %d - HEIGHT: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
+		DebugLog("[SetMediaType] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
 		HRESULT hr = CSourceStream::SetMediaType(pmt);
 		return hr;
 	}
@@ -648,8 +756,8 @@ private:
 		CAutoLock lock(m_pFilter->pStateLock());
 		VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *)(pMediaType->Format());
 		if (!pvi) DebugLog("[CheckMediaType] WANT VIDEO INFO NULL\n");
-		else DebugLog("[CheckMediaType] [WANT] WIDTH: %d - HEIGHT: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
-		     DebugLog("[CheckMediaType] [HAVE] WIDTH: %d - HEIGHT: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
+		else DebugLog("[CheckMediaType] [WANT] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
+		     DebugLog("[CheckMediaType] [HAVE] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biBitCount, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
 		     DebugLog("[CheckMediaType] [RETURNING] %s\n", (*pMediaType != m_mt ? "E_INVALIDARG" : "S_OK"));
 		return (*pMediaType != m_mt ? E_INVALIDARG : S_OK);
 	}
@@ -658,7 +766,7 @@ private:
 	{
 		CheckPointer(pMediaType, E_POINTER);
 		if (iPos < 0) return E_INVALIDARG;
-		if (iPos > (sizeof(_media)/sizeof(_media[0]))) return VFW_S_NO_MORE_ITEMS;
+		if (iPos > (sizeof(_media)/sizeof(_media[0])*2)) return VFW_S_NO_MORE_ITEMS;
 		CAutoLock cAutoLock(m_pFilter->pStateLock()); 
 
 		VIDEOINFO *pvi = (VIDEOINFO *)pMediaType->AllocFormatBuffer(sizeof(VIDEOINFO));
@@ -666,20 +774,19 @@ private:
 		pvi->AvgTimePerFrame = m_avgTimePerFrame;
 		BITMAPINFOHEADER *pBmi = &(pvi->bmiHeader);
 		pBmi->biSize = sizeof(BITMAPINFOHEADER);
-		pBmi->biWidth = _media[iPos].width;
-		pBmi->biHeight = _media[iPos].height;
+		pBmi->biWidth = _media[iPos%(sizeof(_media)/sizeof(_media[0]))].width;
+		pBmi->biHeight = _media[iPos%(sizeof(_media)/sizeof(_media[0]))].height;
 		pBmi->biPlanes = 1;
-		pBmi->biBitCount = 24;
-		pBmi->biCompression = BI_RGB;
+		pBmi->biBitCount = (iPos >= (sizeof(_media)/sizeof(_media[0])) ? 32 : 24);
+		pBmi->biCompression = BI_RGB; //(pBmi->biBitCount == 32 ? MAKEFOURCC('A', 'R', 'G', 'B') : BI_RGB);
 		pvi->bmiHeader.biSizeImage = DIBSIZE(pvi->bmiHeader);
 
-		//DebugLog("[GetMediaType] iPos: %d - WIDTH: %d - HEIGHT: %d - TPS: %d\n", iPos, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->AvgTimePerFrame);
+		//DebugLog("[GetMediaType] iPos: %d - WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d\n", iPos, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame);
 
 		pMediaType->SetType(&MEDIATYPE_Video);
 		pMediaType->SetFormatType(&FORMAT_VideoInfo);
-		const GUID subtype = GetBitmapSubtype(&pvi->bmiHeader);
-		pMediaType->SetSubtype(&subtype);
-		pMediaType->SetSampleSize(DIBSIZE(*pBmi));
+		pMediaType->SetSubtype(&(pBmi->biBitCount == 32 ? MEDIASUBTYPE_ARGB32 : MEDIASUBTYPE_RGB24));
+		pMediaType->SetSampleSize(pvi->bmiHeader.biSizeImage);
 		pMediaType->SetTemporalCompression(FALSE);
 		return S_OK;
 	}

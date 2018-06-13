@@ -68,6 +68,7 @@ public class UnityCapture : MonoBehaviour
     void OnRenderImage(RenderTexture source, RenderTexture destination)
     {
         Graphics.Blit(source, destination);
+        if (CaptureInstance == System.IntPtr.Zero) return;
         switch (CaptureSendTexture(CaptureInstance, source.GetNativeTexturePtr(), DoubleBuffering, ResizeMode, MirrorMode, QualitySettings.activeColorSpace == ColorSpace.Linear))
         {
             case ECaptureSendResult.SUCCESS: break;
