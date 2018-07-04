@@ -21,16 +21,12 @@
 #define UCASSERT(cond) ((void)0)
 #endif
 
-#define CS_NAME_EVENT_WANT  "UnityCapture_Want"
-#define CS_NAME_EVENT_SENT  "UnityCapture_Sent"
-#define CS_NAME_MUTEX       "UnityCapture_Mutx"
-#define CS_NAME_SHARED_DATA "UnityCapture_Data"
-
 struct SharedImageMemory
 {
-	SharedImageMemory()
+	SharedImageMemory(int32_t CapNum)
 	{
 		memset(this, 0, sizeof(*this));
+		m_CapNum = CapNum;
 	}
 
 	~SharedImageMemory()
@@ -41,6 +37,8 @@ struct SharedImageMemory
 		if (m_hSharedFile) CloseHandle(m_hSharedFile);
 	}
 
+	int32_t GetCapNum() { return m_CapNum; }
+	enum { MAX_CAPNUM = ('z' - '0') }; //see Open() for why this number
 	enum EFormat { FORMAT_UINT8, FORMAT_FP16_GAMMA, FORMAT_FP16_LINEAR };
 	enum EResizeMode { RESIZEMODE_DISABLED = 0, RESIZEMODE_LINEAR = 1 };
 	enum EMirrorMode { MIRRORMODE_DISABLED = 0, MIRRORMODE_HORIZONTALLY = 1 };
@@ -95,6 +93,14 @@ private:
 	{
 		if (m_pSharedBuf) return true; //already open
 
+		UCASSERT(m_CapNum <= MAX_CAPNUM);
+		if (m_CapNum > MAX_CAPNUM) m_CapNum = MAX_CAPNUM;
+		char CSCapNumChar = (m_CapNum ? '0' + m_CapNum : '\0'); //use NULL terminator for CapNum 0 to be compatible with old filter DLLs before multi cap
+		char CS_NAME_MUTEX      [] = "UnityCapture_Mutx0"; CS_NAME_MUTEX      [sizeof(CS_NAME_MUTEX      ) - 2] = CSCapNumChar;
+		char CS_NAME_EVENT_WANT [] = "UnityCapture_Want0"; CS_NAME_EVENT_WANT [sizeof(CS_NAME_EVENT_WANT ) - 2] = CSCapNumChar;
+		char CS_NAME_EVENT_SENT [] = "UnityCapture_Sent0"; CS_NAME_EVENT_SENT [sizeof(CS_NAME_EVENT_SENT ) - 2] = CSCapNumChar;
+		char CS_NAME_SHARED_DATA[] = "UnityCapture_Data0"; CS_NAME_SHARED_DATA[sizeof(CS_NAME_SHARED_DATA) - 2] = CSCapNumChar;
+
 		if (!m_hMutex)
 		{
 			if (ForReceiving) m_hMutex = CreateMutexA(NULL, FALSE,      CS_NAME_MUTEX);
@@ -147,6 +153,7 @@ private:
 		uint8_t data[1];
 	};
 
+	int32_t m_CapNum;
 	HANDLE m_hMutex;
 	HANDLE m_hWantFrameEvent;
 	HANDLE m_hSentFrameEvent;

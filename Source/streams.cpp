@@ -4,6 +4,8 @@
 #include <tchar.h>
 #include <strsafe.h>
 
+#define STREAMS_PROVIDE_CUSTOM_FACTORY
+
 #pragma comment(lib, "WinMM.lib")
 
 #include <initguid.h>
@@ -1520,7 +1522,12 @@ CClassFactory::CreateInstance(
     /* Create the new object through the derived class's create function */
 
     HRESULT hr = NOERROR;
+#ifndef STREAMS_PROVIDE_CUSTOM_FACTORY
     CUnknown *pObj = m_pTemplate->CreateInstance(pUnkOuter, &hr);
+#else
+    CUnknown *CustomCreateInstance(int FactoryType, LPUNKNOWN pUnkOuter, HRESULT* hr);
+    CUnknown *pObj = CustomCreateInstance((int)(m_pTemplate - ((CFactoryTemplate*)NULL)), pUnkOuter, &hr);
+#endif
 
     if (pObj == NULL) {
         *pv = NULL;
@@ -1586,12 +1593,18 @@ DllGetClassObject(
             return E_NOINTERFACE;
     }
 
+#ifndef STREAMS_PROVIDE_CUSTOM_FACTORY
     // traverse the array of templates looking for one with this
     // class id
     for (int i = 0; i < g_cTemplates; i++) {
         const CFactoryTemplate * pT = &g_Templates[i];
         if (pT->IsClassID(rClsID)) {
-
+#else
+    {
+        int CustomGetFactoryType(const IID &rClsID);
+        const CFactoryTemplate * pT = ((CFactoryTemplate*)NULL) + CustomGetFactoryType(rClsID);
+        if (pT) {
+#endif
             // found a template - make a class factory based on this
             // template
 
@@ -1612,6 +1625,7 @@ DllGetClassObject(
 void
 DllInitClasses(BOOL bLoading)
 {
+#ifndef STREAMS_PROVIDE_CUSTOM_FACTORY
     int i;
 
     // traverse the array of templates calling the init routine
@@ -1623,6 +1637,7 @@ DllInitClasses(BOOL bLoading)
         }
     }
 
+#endif
 }
 
 // called by COM to determine if this dll can be unloaded
@@ -13318,6 +13333,7 @@ AMovieSetupRegisterFilter2( const AMOVIESETUP_FILTER * const psetupdata
     return hr;
 }
 
+#ifndef STREAMS_PROVIDE_CUSTOM_FACTORY
 
 //---------------------------------------------------------------------------
 //
@@ -13708,3 +13724,4 @@ AMovieDllUnregisterServer()
 
   return hr;
 }
+#endif

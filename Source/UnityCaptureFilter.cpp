@@ -30,8 +30,8 @@
 #include "shared.inl"
 #include "streams.h"
 #include <cguid.h>
-#include <chrono>
-#include <functional>
+#include <strsafe.h>
+#include <math.h>
 
 #define CaptureSourceName L"Unity Video Capture"
 
@@ -75,17 +75,11 @@ static bool OutputFrameRate = false;
 #ifdef _DEBUG
 void DebugLog(const char *format, ...)
 {
-	size_t size = 1024;
-	char stackbuf[1024], *buf = stackbuf;
-	std::string dynamicbuf;
-	for (va_list ap;;)
-	{
-		va_start(ap, format); int needed = vsnprintf_s(buf, size, size, format, ap); va_end(ap);
-		if (needed >= 0 && needed <= (int)size) { OutputDebugStringA(buf); return; }
-		size = (needed > 0) ? (needed+1) : (size*2);
-		dynamicbuf.resize(size);
-		buf = &dynamicbuf.at(0);
-	}
+	char stackbuf[1024];
+	stackbuf[0] = '\0';
+	va_list ap; va_start(ap, format); vsnprintf_s(stackbuf, 1024, 1024, format, ap); va_end(ap);
+	stackbuf[1023] = '\0';
+	OutputDebugStringA(stackbuf);
 }
 #else
 #define DebugLog(...) ((void)0)
@@ -98,12 +92,12 @@ DECLARE_INTERFACE_(ICamSource, IUnknown) { };
 class CCaptureStream : CSourceStream, IKsPropertySet, IAMStreamConfig, IAMStreamControl, IAMPushSource
 {
 public:
-	CCaptureStream(CSource* pOwner, HRESULT* phr) : CSourceStream("Stream", phr, pOwner, L"Output")
+	CCaptureStream(CSource* pOwner, HRESULT* phr, int CapNum) : CSourceStream("Stream", phr, pOwner, L"Output")
 	{
 		m_llFrame = m_llFrameMissCount = 0;
 		m_prevStartTime = 0;
 		m_avgTimePerFrame = 10000000 / 30;
-		m_pReceiver = new SharedImageMemory();
+		m_pReceiver = new SharedImageMemory(CapNum);
 		m_iUnscaledBufSize = 0;
 		m_pUnscaledBuf = NULL;
 		m_RGBA16Table = NULL;
@@ -140,8 +134,8 @@ private:
 		{
 			case SharedImageMemory::RECEIVERES_CAPTUREINACTIVE:{
 				//Show color pattern indicating that Unity is not sending frame data yet
-				char DisplayString[] = "Unity has not started sending image data", *DisplayStrings[] = { DisplayString };
-				int DisplayStringLens[] = { sizeof(DisplayString) - 1 };
+				char DisplayString[128], *DisplayStrings[] = { DisplayString };
+				int DisplayStringLens[] = { sprintf_s(DisplayString, sizeof(DisplayString), "Unity has not started sending image data (Capture Device #%d)", 1+m_pReceiver->GetCapNum()) };
 				FillErrorPattern(ErrorDrawModes[EDC_UnityNeverStarted], &State, 1, DisplayStrings, DisplayStringLens, m_llFrame);
 				Sleep((DWORD)(m_avgTimePerFrame / 10000 - 1)); //just wait a bit until capturing next frame
 				break;}
@@ -919,9 +913,9 @@ private:
 class CCaptureSource : CSource, IQualityControl, ICamSource, ISpecifyPropertyPages
 {
 public:
-	static CUnknown * WINAPI CreateInstance(LPUNKNOWN lpunk, HRESULT *phr)
+	static CUnknown * CreateInstance(LPUNKNOWN lpunk, HRESULT *phr, int32_t CapNum)
 	{
-		ASSERT(phr);
+		UCASSERT(phr);
 		*phr = S_OK;
 
 		CCaptureSource *pSource = new CCaptureSource(lpunk, phr);
@@ -932,7 +926,7 @@ public:
 			return NULL;
 		}
 
-		CCaptureStream* pStream = new CCaptureStream(pSource, phr);
+		CCaptureStream* pStream = new CCaptureStream(pSource, phr, CapNum);
 		if (FAILED(*phr) || !pStream)
 		{
 			if (!pStream) *phr = E_OUTOFMEMORY;
@@ -987,42 +981,63 @@ static const AMOVIESETUP_PIN sudCaptureSourceOut = {
 	1,           // Number of types
 	&sudMediaTypesCaptureSourceOut // Pin Media types
 };
-static const AMOVIESETUP_FILTER sudCaptureSource = {
-	&CLSID_UnityCaptureService, // Filter CLSID
-	CaptureSourceName,          // String name
-	MERIT_DO_NOT_USE,           // Filter merit
-	1,                          // Number pins
-	&sudCaptureSourceOut        // Pin details
-};
 
-//Global template instance (used extern by strmbase.lib/strmbasd.lib)
-CFactoryTemplate g_Templates[] = { 
-	{ CaptureSourceName,                    &CLSID_UnityCaptureService,    CCaptureSource::CreateInstance,     NULL, &sudCaptureSource },
-	{ CaptureSourceName L" Configuration" , &CLSID_UnityCaptureProperties, CCaptureProperties::CreateInstance, NULL, NULL },
-};
-int g_cTemplates = sizeof(g_Templates) / sizeof(g_Templates[0]);
+struct WStringHolder { wchar_t str[256]; };
+__inline static WStringHolder GetCaptureSourceNameNum(int i, int MaxCapNum)
+{
+	WStringHolder res;
+	StringCchPrintfW(res.str, sizeof(res.str)/sizeof(*res.str), (i == 0 ? CaptureSourceName : CaptureSourceName L" #%d"), i + 1);
+	return res;
+}
+
+__inline static GUID GetCLSIDUnityCaptureServiceNum(int i)
+{
+	GUID NumCLSID = CLSID_UnityCaptureService;
+	if (i != 0) NumCLSID.Data4[7] += 1 + i;
+	return NumCLSID;
+}
+
+extern "C" int CustomGetFactoryType(const IID &rClsID)
+{
+	if (IsEqualCLSID(rClsID, CLSID_UnityCaptureProperties)) return 1;
+	if (memcmp(&rClsID, &CLSID_UnityCaptureService, sizeof(GUID) - 1)) return 0;
+	unsigned char LastByteOffset = (rClsID.Data4[7] - CLSID_UnityCaptureService.Data4[7]);
+	return 2 + (LastByteOffset == 0 ? 0 : LastByteOffset - 1);
+}
+
+CUnknown *CustomCreateInstance(int FactoryType, LPUNKNOWN pUnkOuter, HRESULT* hr)
+{
+	if (FactoryType == 1) return CCaptureProperties::CreateInstance(pUnkOuter, hr);
+	if (FactoryType >= 2) return CCaptureSource::CreateInstance(pUnkOuter, hr, FactoryType - 2);
+	return NULL;
+}
 
 // Stack Overflow - "Fake" DirectShow video capture device
 // http://stackoverflow.com/questions/1376734/fake-directshow-video-capture-device
-STDAPI AMovieSetupRegisterServer(CLSID   clsServer, LPCWSTR szDescription, LPCWSTR szFileName, LPCWSTR szThreadingModel = L"Both", LPCWSTR szServerType = L"InprocServer32");
+STDAPI AMovieSetupRegisterServer(CLSID clsServer, LPCWSTR szDescription, LPCWSTR szFileName, LPCWSTR szThreadingModel = L"Both", LPCWSTR szServerType = L"InprocServer32");
 STDAPI AMovieSetupUnregisterServer(CLSID clsServer);
 static HRESULT RegisterFilters(BOOL bRegister)
 {
-	HRESULT hr = NOERROR;
+	UCASSERT(g_hInst != 0);
 	WCHAR achFileName[MAX_PATH];
-	char achTemp[MAX_PATH];
-	ASSERT(g_hInst != 0);
+	if (!GetModuleFileNameW(g_hInst, achFileName, sizeof(achFileName))) return AmHresultFromWin32(GetLastError());
+	HRESULT hr = CoInitialize(0);
 
-	if (0 == GetModuleFileNameA(g_hInst, achTemp, sizeof(achTemp))) return AmHresultFromWin32(GetLastError());
-	MultiByteToWideChar(CP_ACP, 0L, achTemp, lstrlenA(achTemp) + 1, achFileName, (sizeof(achFileName)/sizeof((achFileName)[0])));
-
-	hr = CoInitialize(0);
-	if (bRegister)
+	int MaxCapNum = (bRegister ? 1 : SharedImageMemory::MAX_CAPNUM);
+	if (SUCCEEDED(hr) && bRegister)
 	{
-		hr = AMovieSetupRegisterServer(CLSID_UnityCaptureService, CaptureSourceName, achFileName, L"Both", L"InprocServer32");
-		if (FAILED(hr)) MessageBoxA(0, "Service AMovieSetupRegisterServer failed", "RegisterFilters setup", NULL);
-		hr = AMovieSetupRegisterServer(CLSID_UnityCaptureProperties, CaptureSourceName L" Configuration", achFileName, L"Both", L"InprocServer32");
-		if (FAILED(hr)) MessageBoxA(0, "Properties AMovieSetupRegisterServer failed", "RegisterFilters setup", NULL);
+		for (int i = 0; i != __argc; i++)
+		{
+			char* CapNumParam = strstr(__argv[i], "/i:UnityCaptureDevices=");
+			if (CapNumParam) MaxCapNum = atoi(CapNumParam + sizeof("/i:UnityCaptureDevices=") - 1);
+		}
+		if (MaxCapNum < 1) MaxCapNum = 1;
+		if (MaxCapNum > SharedImageMemory::MAX_CAPNUM) MaxCapNum = SharedImageMemory::MAX_CAPNUM;
+
+		for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
+			hr = AMovieSetupRegisterServer(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(i, MaxCapNum).str, achFileName, L"Both", L"InprocServer32");
+		if (SUCCEEDED(hr)) hr = AMovieSetupRegisterServer(CLSID_UnityCaptureProperties, CaptureSourceName L" Configuration", achFileName, L"Both", L"InprocServer32");
+		if (FAILED(hr)) MessageBoxA(0, "AMovieSetupRegisterServer failed", "RegisterFilters setup", NULL);
 	}
 
 	if (SUCCEEDED(hr))
@@ -1034,34 +1049,44 @@ static HRESULT RegisterFilters(BOOL bRegister)
 		{
 			if (bRegister)
 			{
-				IMoniker *pMoniker = 0;
 				REGFILTER2 rf2;
 				rf2.dwVersion = 1;
 				rf2.dwMerit = MERIT_DO_NOT_USE;
 				rf2.cPins = 1;
 				rf2.rgPins = &sudCaptureSourceOut;
-				hr = fm->RegisterFilter(CLSID_UnityCaptureService, CaptureSourceName, 0, &CLSID_VideoInputDeviceCategory, NULL, &rf2);
+				for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
+				{
+					hr = fm->RegisterFilter(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(i, MaxCapNum).str, 0, &CLSID_VideoInputDeviceCategory, NULL, &rf2);
+
+					//This is needed for Unity and Skype to access the virtual camera
+					//Thanks to: https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/cd2b9d2d-b961-442d-8946-fdc038fed530/where-to-specify-device-id-in-the-filter?forum=windowsdirectshowdevelopment
+					LPOLESTR CLSID_Category_Str, CLSID_Filter_Str; WCHAR strKey[256]; HKEY hKey;
+					StringFromCLSID(CLSID_VideoInputDeviceCategory, &CLSID_Category_Str);
+					StringFromCLSID(GetCLSIDUnityCaptureServiceNum(i), &CLSID_Filter_Str);
+					StringCchPrintfW(strKey, 256, L"SOFTWARE\\Classes\\CLSID\\%s\\Instance\\%s", CLSID_Category_Str, CLSID_Filter_Str);
+					RegOpenKeyExW(HKEY_LOCAL_MACHINE, strKey, 0, KEY_ALL_ACCESS, &hKey);
+					RegSetValueExA(hKey, "DevicePath", 0, REG_SZ, (LPBYTE)"foo:bar", (DWORD)sizeof("foo:bar"));
+					RegCloseKey(hKey);
+				}
 				if (FAILED(hr)) MessageBoxA(0, "Service RegisterFilter of IFilterMapper2 failed", "RegisterFilters setup", NULL);
 			}
 			else
 			{
-				hr = fm->UnregisterFilter(&CLSID_VideoInputDeviceCategory, 0, CLSID_UnityCaptureService);
+				for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
+					hr = fm->UnregisterFilter(&CLSID_VideoInputDeviceCategory, 0, GetCLSIDUnityCaptureServiceNum(i));
 				if (FAILED(hr)) MessageBoxA(0, "Service UnregisterFilter of IFilterMapper2 failed", "RegisterFilters setup", NULL);
 			}
 		}
-		if (fm)
-		{
-			fm->Release();
-			fm = NULL;
-		}
+
+		if (fm) fm->Release();
 	}
 
 	if (SUCCEEDED(hr) && !bRegister)
 	{
-		hr = AMovieSetupUnregisterServer(CLSID_UnityCaptureService);
-		if (FAILED(hr)) MessageBoxA(0, "Service AMovieSetupUnregisterServer failed", "RegisterFilters setup", NULL);
-		hr = AMovieSetupUnregisterServer(CLSID_UnityCaptureProperties);
-		if (FAILED(hr)) MessageBoxA(0, "Properties AMovieSetupUnregisterServer failed", "RegisterFilters setup", NULL);
+		for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
+			hr = AMovieSetupUnregisterServer(GetCLSIDUnityCaptureServiceNum(i));
+		if (SUCCEEDED(hr)) hr = AMovieSetupUnregisterServer(CLSID_UnityCaptureProperties);
+		if (FAILED(hr)) MessageBoxA(0, "AMovieSetupUnregisterServer failed", "RegisterFilters setup", NULL);
 	}
 
 	CoFreeUnusedLibraries();
@@ -1071,28 +1096,12 @@ static HRESULT RegisterFilters(BOOL bRegister)
 
 STDAPI DllRegisterServer()
 {
-	HRESULT res = RegisterFilters(TRUE);
+	return RegisterFilters(TRUE);
+}
 
-	//This lets Unity and Skype access the virtual camera too!
-	//Thanks to: https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/cd2b9d2d-b961-442d-8946-fdc038fed530/where-to-specify-device-id-in-the-filter?forum=windowsdirectshowdevelopment
-	LPOLESTR olestr_CLSID;
-	StringFromCLSID(CLSID_UnityCaptureService, &olestr_CLSID);
-	std::wstring wstr_CLSID(olestr_CLSID);
-
-	LPOLESTR guidString;
-	StringFromCLSID(CLSID_VideoInputDeviceCategory, &guidString);
-	std::wstring inputCat = guidString;
-	std::wstring str_video_capture_device_key = L"CLSID\\" + inputCat + L"\\Instance";
-	//std::string str_video_capture_device_key("SOFTWARE\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\");
-	str_video_capture_device_key.append(wstr_CLSID);
-
-	HKEY hKey;
-	RegOpenKeyExW(HKEY_LOCAL_MACHINE, str_video_capture_device_key.c_str(), 0, KEY_ALL_ACCESS, &hKey);
-	LPCSTR value = ("DevicePath");
-	LPCSTR data = "foo:bar";
-	RegSetValueExA(hKey, value, 0, REG_SZ, (LPBYTE)data, (DWORD)strlen(data) + 1);
-	RegCloseKey(hKey);
-	return res;
+STDAPI DllInstall(BOOL bInstall, PCWSTR pszCmdLine)
+{
+	return S_OK;
 }
 
 STDAPI DllUnregisterServer()

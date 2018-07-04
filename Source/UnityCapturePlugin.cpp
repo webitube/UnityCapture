@@ -54,11 +54,11 @@ struct UnityCaptureInstance
 	ID3D11Texture2D* Textures[2];
 };
 
-extern "C" __declspec(dllexport) UnityCaptureInstance* CaptureCreateInstance()
+extern "C" __declspec(dllexport) UnityCaptureInstance* CaptureCreateInstance(int CapNum)
 {
 	UnityCaptureInstance* c = new UnityCaptureInstance();
 	memset(c, 0, sizeof(UnityCaptureInstance));
-	c->Sender = new SharedImageMemory();
+	c->Sender = new SharedImageMemory(CapNum);
 	return c;
 }
 

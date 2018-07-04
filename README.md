@@ -9,19 +9,23 @@ In more simple terms, it essentially makes Unity simulate a web cam device on Wi
 
 This project is based on [UnityCam by Yamen Saraiji](//github.com/mrayy/UnityCam) with added features and big performance
 improvements. It supports lag-free 1080p at 60 FPS on moderate PCs and can handle 4K resolutions on a faster PC.
-It also supports capturing alpha channel (transparency) in receiving applications that support it (like [OBS](https://obsproject.com/)).
+It also supports capturing multiple cameras and alpha channel (transparency) in receiving applications that
+support it (like [OBS](https://obsproject.com/)).
 
 
 ## Installation
 
-First download this project from GitHub with the 'Download ZIP' button or by cloning the repository.
+First download this project from GitHub with the [`Download ZIP`](../../archive/master.zip) button or by cloning the repository.
 
-To register the DirectShow Filter to be available in Windows programs, run the Install.bat inside the "Install" directory.  
+To register the DirectShow Filter to be available in Windows programs, run the `Install.bat` inside the `Install` directory.  
 Make sure the files in the install directory are placed where you want them to be.  
-If you want to move or delete the files, run "Uninstall.bat" first.
+If you want to move or delete the files, run `Uninstall.bat` first.
 
 If you have problems registering or unregistering, right click on the Install.bat and choose "Run as Administrator".
 
+The script `Install.bat` registers just a single capture device usable for capturing a single Unity camera. If you want to
+capture multiple cameras simultaneously you can instead run the `InstallMultipleDevices.bat` script which prompts for a
+number of capture devices you wish to register.
 
 ## Test in Unity
 
@@ -44,16 +48,20 @@ into your own project and then add the 'Unity Capture' behavior to your camera a
 You can also enable this behavior on a secondary camera that is not your main game camera by setting a target texture
 with your desired capture output resolution.
 
+If you want to capture multiple cameras simultaneously you can refer to the 'UnityCaptureMultiCam' scene
+and the 'MultiCam' script used by it.
+
 ### Settings
 
 There are a few settings for the 'Unity Capture' behavior.
 
+- 'Capture Device': Set the capture device filter number (only relevant when multiple capture devices were [installed](#installation))
 - 'Resize Mode': It is suggested to leave this disabled and just let your capture target application handle the display
   sizing/resizing because this setting can introduce frame skipping. So far only a very basic linear resize is supported.
 - 'Mirror Mode': This setting should also be handled by your target application if possible and needed, but it is available.
 - 'Double Buffering': See [performance caveats](#performance-caveats) below
-- 'Enable V Sync': Overwrite the state of the application v-sync setting during capturing
-- 'Target Frame Rate': Overwrite the application target fps setting during capture
+- 'Enable V Sync': Overwrite the state of the application v-sync setting on component start
+- 'Target Frame Rate': Overwrite the application target fps setting on component start
 - 'Hide Warnings': Disable output of warning messages (but not errors)
 
 ### Possible errors/warnings
@@ -122,7 +130,6 @@ Otherwise it is recommended to leave scaling and mirroring disabled in the Unity
 ## Todo
 
 - Saving of the output device configuration
-- Support capturing multiple cameras separately
 - Bilinear filtered resizing
 
 
