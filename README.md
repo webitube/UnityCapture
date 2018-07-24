@@ -85,7 +85,9 @@ There are a few settings for the 'Unity Capture' behavior.
 
 In your receiving application mainly two settings are of relevance.
 Depending on the application, the settings might be named different or not available at all in which case it will fall back to a default.
- - Resolution: Set this to match the rendering resolution in Unity
+ - Resolution: Set this to match the rendering resolution in Unity. Depending on your target application you may be able
+   to request a custom resolution. For instance in OBS you can input 512x512 into the resolution settings textbox.
+   For custom resolutions, make sure width is specified in increments of 4.
  - Video Format: Set this to ARGB if you want to capture the alpha channel (transparency).
 Other settings like FPS, color space or buffering are irrelevant as the output from Unity controls these parameters.
 

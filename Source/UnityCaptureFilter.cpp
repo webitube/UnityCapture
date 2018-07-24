@@ -45,24 +45,32 @@ DEFINE_GUID(CLSID_UnityCaptureProperties, 0x5c2cd55c, 0x92ad, 0x4999, 0x86, 0x66
 #endif
 
 //List of resolutions offered by this filter
-//See comment above about scaling and how to set the rendering resolution in Unity
 //If you add a higher resolution, make sure to update MAX_SHARED_IMAGE_SIZE
 static struct { int width, height; } _media[] =
 {
-	{ 1920, 1080 },
-	{ 1280,  720 },
-	{  640,  360 },
-	{  256,  144 },
-	{ 2560, 1440 },
-	{ 3840, 2160 },
-	{ 1440, 1080 },
-	{  960,  720 },
-	{  640,  480 },
-	{  480,  360 },
-	{  320,  240 },
-	{  192,  144 },
-	{ 1920, 1440 },
-	{ 2880, 2160 },
+	{ 1920, 1080 }, //16:9
+	{ 1280,  720 }, //16:9
+	{  960,  540 }, //16:9
+	{  640,  360 }, //16:9
+	{  480,  270 }, //16:9
+	{  256,  144 }, //16:9
+	{ 2560, 1440 }, //16:9
+	{ 3840, 2160 }, //16:9
+	{ 1440, 1080 }, //4:3
+	{  960,  720 }, //4:3
+	{  640,  480 }, //4:3
+	{  480,  360 }, //4:3
+	{  320,  240 }, //4:3
+	{  192,  144 }, //4:3
+	{ 1920, 1440 }, //4:3
+	{ 2880, 2160 }, //4:3
+	{ 1920, 1200 }, //16:10
+	{ 1280,  800 }, //16:10
+	{ 2880, 1800 }, //16:10
+	{ 2560, 1600 }, //16:10
+	{ 1680, 1050 }, //16:10
+	{ 1440,  900 }, //16:10
+	{    0,    0 }, //This slot is used for custom resolutions if requested by the target application
 };
 
 //Error draw modes (what to display on screen in case of errors/warnings)
@@ -165,7 +173,8 @@ private:
 
 		inline void Execute()
 		{
-			UCASSERT(RowEnd > RowStart);
+			UCASSERT(RowEnd >= RowStart);
+			if (RowStart == RowEnd) return;
 			if      (Type == JOB_RGBA8toBGR8)            RGBA8toBGR8();
 			else if (Type == JOB_RGBA8toBGRA8)           RGBA8toBGRA8();
 			else if (Type == JOB_RGBA16toBGR8)           RGBA16toBGR8();
@@ -531,7 +540,7 @@ private:
 			case EDM_BLACK:       ZeroMemory(State->Buf, (State->BufWidth * State->BufHeight * State->BufBPP)); break; //Filled with black
 		}
 
-		if (LineCount && edm != EDM_BLACK && edm != EDM_GREENKEY)
+		if (LineCount && edm != EDM_BLACK && edm != EDM_GREENKEY && State->BufHeight >= LineCount * 20)
 		{
 			void* pTextBuf;
 			HDC TextDC = CreateCompatibleDC(0);
@@ -662,14 +671,18 @@ private:
 		if (pmt == NULL) return E_POINTER;
 
 		VIDEOINFO* pvi = (VIDEOINFO*)pmt->pbFormat;
-		if (pvi == NULL) DebugLog("[SetFormat] E_UNEXPECTED\n");
+		if (pvi == NULL) DebugLog("[SetFormat] E_UNEXPECTED (pvi is null)\n");
 		if (pvi == NULL) return E_UNEXPECTED;
+
+		bool HasStrideBytes = (DIBSIZE(pvi->bmiHeader) != pvi->bmiHeader.biWidth * pvi->bmiHeader.biHeight * pvi->bmiHeader.biBitCount / 8);
+		if (HasStrideBytes) DebugLog("[SetFormat] E_FAIL (has stride bytes)\n");
+		if (HasStrideBytes) return E_FAIL;
 
 		DebugLog("[SetFormat] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZE: %d - SIZE CALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame,
 			(int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
-		if (pvi->bmiHeader.biSizeImage != DIBSIZE(pvi->bmiHeader)) return E_FAIL;
 		m_avgTimePerFrame = pvi->AvgTimePerFrame;
 		m_mt = *pmt;
+		((VIDEOINFO*)m_mt.pbFormat)->bmiHeader.biSizeImage = DIBSIZE(((VIDEOINFO*)m_mt.pbFormat)->bmiHeader);
 		return S_OK;
 	}
 
@@ -701,7 +714,6 @@ private:
 		HRESULT hr = GetMediaType(iIndex, &mt);
 		if (FAILED(hr)) return hr;
 		VIDEOINFO *pvi = (VIDEOINFO*)mt.Format();
-		DebugLog("[GetStreamCaps] Index: %d - WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", iIndex, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
 
 		*ppmt = CreateMediaType(&mt);
 
@@ -714,33 +726,35 @@ private:
 		pCaps->CropAlignY         = 1;
 		pCaps->OutputGranularityX = 1;
 		pCaps->OutputGranularityY = 1;
-		pCaps->StretchTapsX       = 0;
-		pCaps->StretchTapsY       = 0;
-		pCaps->ShrinkTapsX        = 0;
-		pCaps->ShrinkTapsY        = 0;
+		pCaps->StretchTapsX       = 2;
+		pCaps->StretchTapsY       = 2;
+		pCaps->ShrinkTapsX        = 2;
+		pCaps->ShrinkTapsY        = 2;
 		pCaps->InputSize.cx       = pvi->bmiHeader.biWidth;
 		pCaps->InputSize.cy       = pvi->bmiHeader.biHeight;
-		pCaps->MinCroppingSize.cx = pvi->bmiHeader.biWidth;
-		pCaps->MinCroppingSize.cy = pvi->bmiHeader.biHeight;
+		pCaps->MinCroppingSize.cx = 1;
+		pCaps->MinCroppingSize.cy = 1;
 		pCaps->MaxCroppingSize.cx = pvi->bmiHeader.biWidth;
 		pCaps->MaxCroppingSize.cy = pvi->bmiHeader.biHeight;
-		pCaps->CropGranularityX   = pvi->bmiHeader.biWidth;
-		pCaps->CropGranularityY   = pvi->bmiHeader.biHeight;
-		pCaps->MinOutputSize.cx   = pvi->bmiHeader.biWidth;
-		pCaps->MinOutputSize.cy   = pvi->bmiHeader.biHeight;
+		pCaps->CropGranularityX   = 1;
+		pCaps->CropGranularityY   = 1;
+		pCaps->MinOutputSize.cx   = 4;
+		pCaps->MinOutputSize.cy   = 4;
 		pCaps->MaxOutputSize.cx   = pvi->bmiHeader.biWidth;
 		pCaps->MaxOutputSize.cy   = pvi->bmiHeader.biHeight;
 		pCaps->MinFrameInterval = 10000000 / 120;
 		pCaps->MaxFrameInterval = 10000000 / 30;
 		pCaps->MinBitsPerSecond = pCaps->MinOutputSize.cx * pCaps->MinOutputSize.cy * pvi->bmiHeader.biBitCount * 30;
 		pCaps->MaxBitsPerSecond = pCaps->MaxOutputSize.cx * pCaps->MaxOutputSize.cy * pvi->bmiHeader.biBitCount * 120;
+		DebugLog("[GetStreamCaps] Index: %d - MINWIDTH: %d - MINHEIGHT: %d - MAXWIDTH: %d - MAXHEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", iIndex, (int)pCaps->MinOutputSize.cx, (int)pCaps->MinOutputSize.cy, (int)pCaps->MaxOutputSize.cx, (int)pCaps->MaxOutputSize.cy, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
 		return S_OK;
 	}
 
 	HRESULT SetMediaType(const CMediaType *pmt) override
 	{
 		VIDEOINFOHEADER* pvi = (VIDEOINFOHEADER*)(pmt->Format());
-		DebugLog("[SetMediaType] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
+		DebugLog("[SetMediaType] [ASKD] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
+		DebugLog("[SetMediaType] [HAVE] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biBitCount, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
 		HRESULT hr = CSourceStream::SetMediaType(pmt);
 		return hr;
 	}
@@ -750,8 +764,8 @@ private:
 		CAutoLock lock(m_pFilter->pStateLock());
 		VIDEOINFOHEADER *pvi = (VIDEOINFOHEADER *)(pMediaType->Format());
 		if (!pvi) DebugLog("[CheckMediaType] WANT VIDEO INFO NULL\n");
-		else DebugLog("[CheckMediaType] [WANT] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader));
-		     DebugLog("[CheckMediaType] [HAVE] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biBitCount, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader));
+		else DebugLog("[CheckMediaType] [WANT] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d - CBFORMAT: %d\n", (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame, (int)pvi->bmiHeader.biSizeImage, (int)DIBSIZE(pvi->bmiHeader), (int)pMediaType->cbFormat);
+		     DebugLog("[CheckMediaType] [HAVE] WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d - SIZEIMAGE: %d - SIZECALC: %d - CBFORMAT: %d\n", (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biWidth, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biHeight, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biBitCount, (int)((VIDEOINFO*)m_mt.Format())->AvgTimePerFrame, (int)((VIDEOINFO*)m_mt.Format())->bmiHeader.biSizeImage, (int)DIBSIZE(((VIDEOINFO*)m_mt.Format())->bmiHeader), (int)m_mt.cbFormat);
 		     DebugLog("[CheckMediaType] [RETURNING] %s\n", (*pMediaType != m_mt ? "E_INVALIDARG" : "S_OK"));
 		return (*pMediaType != m_mt ? E_INVALIDARG : S_OK);
 	}
@@ -760,19 +774,21 @@ private:
 	{
 		CheckPointer(pMediaType, E_POINTER);
 		if (iPos < 0) return E_INVALIDARG;
-		if (iPos > (sizeof(_media)/sizeof(_media[0])*2)) return VFW_S_NO_MORE_ITEMS;
+		if (iPos >= (sizeof(_media)/sizeof(_media[0])*2)) return VFW_S_NO_MORE_ITEMS;
 		CAutoLock cAutoLock(m_pFilter->pStateLock()); 
 
+		int iMedia = iPos%(sizeof(_media)/sizeof(_media[0]));
+		UCASSERT(_media[iMedia].width * _media[iMedia].height * 4 * sizeof(short) <= MAX_SHARED_IMAGE_SIZE);
 		VIDEOINFO *pvi = (VIDEOINFO *)pMediaType->AllocFormatBuffer(sizeof(VIDEOINFO));
 		ZeroMemory(pvi, sizeof(VIDEOINFO));
 		pvi->AvgTimePerFrame = m_avgTimePerFrame;
 		BITMAPINFOHEADER *pBmi = &(pvi->bmiHeader);
 		pBmi->biSize = sizeof(BITMAPINFOHEADER);
-		pBmi->biWidth = _media[iPos%(sizeof(_media)/sizeof(_media[0]))].width;
-		pBmi->biHeight = _media[iPos%(sizeof(_media)/sizeof(_media[0]))].height;
+		pBmi->biWidth  = (_media[iMedia].width  ? _media[iMedia].width  : ((VIDEOINFO*)m_mt.pbFormat)->bmiHeader.biWidth );
+		pBmi->biHeight = (_media[iMedia].height ? _media[iMedia].height : ((VIDEOINFO*)m_mt.pbFormat)->bmiHeader.biHeight);
 		pBmi->biPlanes = 1;
 		pBmi->biBitCount = (iPos >= (sizeof(_media)/sizeof(_media[0])) ? 32 : 24);
-		pBmi->biCompression = BI_RGB; //(pBmi->biBitCount == 32 ? MAKEFOURCC('A', 'R', 'G', 'B') : BI_RGB);
+		pBmi->biCompression = BI_RGB;
 		pvi->bmiHeader.biSizeImage = DIBSIZE(pvi->bmiHeader);
 
 		//DebugLog("[GetMediaType] iPos: %d - WIDTH: %d - HEIGHT: %d - BITS: %d - TPS: %d\n", iPos, (int)pvi->bmiHeader.biWidth, (int)pvi->bmiHeader.biHeight, (int)pvi->bmiHeader.biBitCount, (int)pvi->AvgTimePerFrame);
