@@ -27,6 +27,7 @@ The script `Install.bat` registers just a single capture device usable for captu
 capture multiple cameras simultaneously you can instead run the `InstallMultipleDevices.bat` script which prompts for a
 number of capture devices you wish to register.
 
+
 ## Test in Unity
 
 Open the included UnityCaptureSample project in Unity, load the scene 'UnityCaptureExample' and hit play.  
@@ -50,6 +51,9 @@ with your desired capture output resolution.
 
 If you want to capture multiple cameras simultaneously you can refer to the 'UnityCaptureMultiCam' scene
 and the 'MultiCam' script used by it.
+
+If you want to capture a custom texture (generated texture, a video, another webcam feed or a static image) you
+can refer to the 'UnityCaptureTextureExample' scene and the 'CaptureTexture' script used by it.
 
 ### Settings
 
