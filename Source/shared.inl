@@ -39,22 +39,23 @@ struct SharedImageMemory
 
 	int32_t GetCapNum() { return m_CapNum; }
 	enum { MAX_CAPNUM = ('z' - '0') }; //see Open() for why this number
+	enum { RECEIVE_MAX_WAIT = 200 }; //How many milliseconds to wait for new frame
 	enum EFormat { FORMAT_UINT8, FORMAT_FP16_GAMMA, FORMAT_FP16_LINEAR };
 	enum EResizeMode { RESIZEMODE_DISABLED = 0, RESIZEMODE_LINEAR = 1 };
 	enum EMirrorMode { MIRRORMODE_DISABLED = 0, MIRRORMODE_HORIZONTALLY = 1 };
 	enum EReceiveResult { RECEIVERES_CAPTUREINACTIVE, RECEIVERES_NEWFRAME, RECEIVERES_OLDFRAME };
 
-	typedef void (*ReceiveCallbackFunc)(int width, int height, int stride, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, uint8_t* buffer, void* callback_data);
+	typedef void (*ReceiveCallbackFunc)(int width, int height, int stride, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, int timeout, uint8_t* buffer, void* callback_data);
 
 	EReceiveResult Receive(ReceiveCallbackFunc callback, void* callback_data)
 	{
 		if (!Open(true) || !m_pSharedBuf->width) return RECEIVERES_CAPTUREINACTIVE;
 
 		SetEvent(m_hWantFrameEvent);
-		bool IsNewFrame = (WaitForSingleObject(m_hSentFrameEvent, 200) == WAIT_OBJECT_0);
+		bool IsNewFrame = (WaitForSingleObject(m_hSentFrameEvent, RECEIVE_MAX_WAIT) == WAIT_OBJECT_0);
 
 		WaitForSingleObject(m_hMutex, INFINITE); //lock mutex
-		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, (EFormat)m_pSharedBuf->format, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->data, callback_data);
+		callback(m_pSharedBuf->width, m_pSharedBuf->height, m_pSharedBuf->stride, (EFormat)m_pSharedBuf->format, (EResizeMode)m_pSharedBuf->resizemode, (EMirrorMode)m_pSharedBuf->mirrormode, m_pSharedBuf->timeout, m_pSharedBuf->data, callback_data);
 		ReleaseMutex(m_hMutex); //unlock mutex
 
 		return (IsNewFrame ? RECEIVERES_NEWFRAME : RECEIVERES_OLDFRAME);
@@ -66,7 +67,7 @@ struct SharedImageMemory
 	}
 
 	enum ESendResult { SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
-	ESendResult Send(int width, int height, int stride, DWORD DataSize, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, const uint8_t* buffer)
+	ESendResult Send(int width, int height, int stride, DWORD DataSize, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, int timeout, const uint8_t* buffer)
 	{
 		UCASSERT(buffer);
 		UCASSERT(m_pSharedBuf);
@@ -79,6 +80,7 @@ struct SharedImageMemory
 		m_pSharedBuf->format = format;
 		m_pSharedBuf->resizemode = resizemode;
 		m_pSharedBuf->mirrormode = mirrormode;
+		m_pSharedBuf->timeout = timeout;
 		memcpy(m_pSharedBuf->data, buffer, DataSize);
 		ReleaseMutex(m_hMutex); //unlock mutex
 
@@ -150,6 +152,7 @@ private:
 		int format;
 		int resizemode;
 		int mirrormode;
+		int timeout;
 		uint8_t data[1];
 	};
 

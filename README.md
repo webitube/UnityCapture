@@ -60,6 +60,9 @@ can refer to the 'UnityCaptureTextureExample' scene and the 'CaptureTexture' scr
 There are a few settings for the 'Unity Capture' behavior.
 
 - 'Capture Device': Set the capture device filter number (only relevant when multiple capture devices were [installed](#installation))
+- 'Timeout': Sets how many milliseconds to wait for a new frame until sending is considered to be stopped  
+  If rendering every frame this can be very low. Default is 1000 to allow stalls due to loading, etc.
+  When set to 0 the image will stay up even when Unity is ended (until the receiving application also ends).
 - 'Resize Mode': It is suggested to leave this disabled and just let your capture target application handle the display
   sizing/resizing because this setting can introduce frame skipping. So far only a very basic linear resize is supported.
 - 'Mirror Mode': This setting should also be handled by your target application if possible and needed, but it is available.

@@ -153,8 +153,8 @@ private:
 				break;
 
 			case SharedImageMemory::RECEIVERES_OLDFRAME:{
-				if (m_llFrameMissCount++ < 5) break;
-				//Show color pattern when having 5 frames without new image (probably Unity stopped sending data)
+				if (++m_llFrameMissCount < m_llFrameMissMax) break;
+				//Show color pattern when received more than X frames without new image (probably Unity stopped sending data)
 				char DisplayString[] = "Unity has stopped sending image data", *DisplayStrings[] = { DisplayString };
 				int DisplayStringLens[] = { sizeof(DisplayString) - 1 };
 				FillErrorPattern(ErrorDrawModes[EDC_UnitySendingStopped], &State, 1, DisplayStrings, DisplayStringLens, m_llFrame);
@@ -454,8 +454,11 @@ private:
 		CCaptureStream* Owner;
 	};
 
-	static void ProcessImage(int InWidth, int InHeight, int InStride, SharedImageMemory::EFormat Format, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, uint8_t* InBuf, ProcessState* State)
+	static void ProcessImage(int InWidth, int InHeight, int InStride, SharedImageMemory::EFormat Format, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, int Timeout, uint8_t* InBuf, ProcessState* State)
 	{
+		//Set maximum number of missed frames allowed until we show sending as having stopped
+		State->Owner->m_llFrameMissMax = (Timeout + SharedImageMemory::RECEIVE_MAX_WAIT - 1) / SharedImageMemory::RECEIVE_MAX_WAIT;
+
 		const bool NeedResize = (InWidth != State->BufWidth || InHeight != State->BufHeight);
 		if (NeedResize && ResizeMode == SharedImageMemory::RESIZEMODE_DISABLED)
 		{
@@ -805,11 +808,12 @@ private:
 	{
 		DebugLog("[OnThreadStartPlay] OnThreadStartPlay\n");
 		m_llFrame = m_llFrameMissCount = 0;
+		m_llFrameMissMax = 5;
 		return CSourceStream::OnThreadStartPlay();
 	}
 
 	CMediaType m_mt;
-	LONGLONG m_llFrame, m_llFrameMissCount;
+	LONGLONG m_llFrame, m_llFrameMissCount, m_llFrameMissMax;
 	REFERENCE_TIME m_prevStartTime;
 	REFERENCE_TIME m_avgTimePerFrame;
 	SharedImageMemory* m_pReceiver;

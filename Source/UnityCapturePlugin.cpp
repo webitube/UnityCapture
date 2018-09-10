@@ -71,7 +71,7 @@ extern "C" __declspec(dllexport) void CaptureDeleteInstance(UnityCaptureInstance
 	delete c;
 }
 
-extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace)
+extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, int Timeout, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace)
 {
 	if (!c || !TextureNativePtr) return RET_ERROR_PARAMETER;
 	if (g_GraphicsDeviceType != kUnityGfxRendererD3D11) return RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
@@ -95,7 +95,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 		ZeroMemory(&textureDesc, sizeof(textureDesc));
 		textureDesc.Width = desc.Width;
 		textureDesc.Height = desc.Height;
-		textureDesc.MipLevels = 1;
+		textureDesc.MipLevels = desc.MipLevels;
 		textureDesc.ArraySize = 1;
 		textureDesc.Format = desc.Format;
 		textureDesc.SampleDesc.Count = 1;
@@ -128,10 +128,10 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	//Copy render texture to texture with CPU access and map the image data to RAM
 	ctx->CopyResource(WriteTexture, d3dtex);
 	D3D11_MAPPED_SUBRESOURCE mapResource;
-	if (FAILED(ctx->Map(ReadTexture, 0, D3D11_MAP_READ, NULL, &mapResource))) return RET_ERROR_READTEXTURE;
+	if (FAILED(ctx->Map(ReadTexture, 0, D3D11_MAP_READ, 0, &mapResource))) return RET_ERROR_READTEXTURE;
 
 	//Push the captured data to the direct show filter
-	SharedImageMemory::ESendResult res = c->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (Format == SharedImageMemory::FORMAT_UINT8 ? 4 : 8), mapResource.RowPitch * desc.Height, Format, ResizeMode, MirrorMode, (const unsigned char*)mapResource.pData);
+	SharedImageMemory::ESendResult res = c->Sender->Send(desc.Width, desc.Height, mapResource.RowPitch / (Format == SharedImageMemory::FORMAT_UINT8 ? 4 : 8), mapResource.RowPitch * desc.Height, Format, ResizeMode, MirrorMode, Timeout, (const unsigned char*)mapResource.pData);
 
 	ctx->Unmap(ReadTexture, 0);
 
