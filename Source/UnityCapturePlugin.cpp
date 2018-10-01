@@ -50,8 +50,8 @@ struct UnityCaptureInstance
 	SharedImageMemory* Sender;
 	int Width, Height;
 	DXGI_FORMAT Format;
-	bool UseDoubleBuffering, AlternativeBuffer;
-	ID3D11Texture2D* Textures[2];
+	unsigned int ExtraBuffers, BufferNum;
+	ID3D11Texture2D** Textures;
 };
 
 extern "C" __declspec(dllexport) UnityCaptureInstance* CaptureCreateInstance(int CapNum)
@@ -66,12 +66,15 @@ extern "C" __declspec(dllexport) void CaptureDeleteInstance(UnityCaptureInstance
 {
 	if (!c) return;
 	delete c->Sender;
-	if (c->Textures[0]) c->Textures[0]->Release();
-	if (c->Textures[1]) c->Textures[1]->Release();
+	if (c->Textures)
+	{
+		for (unsigned int i = 0; i <= c->ExtraBuffers; i++) c->Textures[i]->Release();
+		free(c->Textures);
+	}
 	delete c;
 }
 
-extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, int Timeout, bool UseDoubleBuffering, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace)
+extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c, void* TextureNativePtr, int Timeout, unsigned int ExtraBuffers, SharedImageMemory::EResizeMode ResizeMode, SharedImageMemory::EMirrorMode MirrorMode, bool IsLinearColorSpace)
 {
 	if (!c || !TextureNativePtr) return RET_ERROR_PARAMETER;
 	if (g_GraphicsDeviceType != kUnityGfxRendererD3D11) return RET_ERROR_UNSUPPORTEDGRAPHICSDEVICE;
@@ -88,7 +91,7 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 	d3dtex->GetDesc(&desc);
 	if (!desc.Width || !desc.Height) return RET_ERROR_READTEXTURE;
 
-	if (c->Width != desc.Width || c->Height != desc.Height || c->Format != desc.Format || c->UseDoubleBuffering != UseDoubleBuffering)
+	if (c->Width != desc.Width || c->Height != desc.Height || c->Format != desc.Format || c->ExtraBuffers != ExtraBuffers)
 	{
 		//Allocate a Texture2D resource which holds the texture with CPU memory access
 		D3D11_TEXTURE2D_DESC textureDesc;
@@ -103,21 +106,24 @@ extern "C" __declspec(dllexport) int CaptureSendTexture(UnityCaptureInstance* c,
 		textureDesc.Usage = D3D11_USAGE_STAGING;
 		textureDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
 		textureDesc.MiscFlags = 0;
-		if (c->Textures[0]) c->Textures[0]->Release();
-		g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->Textures[0]);
-		if (c->Textures[1]) c->Textures[1]->Release(); 
-		if (UseDoubleBuffering) g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->Textures[1]);
-		else c->Textures[1] = NULL;
+		if (c->Textures)
+		{
+			for (unsigned int i = 0; i <= c->ExtraBuffers; i++) c->Textures[i]->Release();
+			free(c->Textures);
+		}
+		c->ExtraBuffers = ExtraBuffers;
+		c->Textures = (ID3D11Texture2D**)malloc(sizeof(ID3D11Texture2D*) * (ExtraBuffers + 1));
+		for (unsigned int i = 0; i <= ExtraBuffers; i++) g_D3D11GraphicsDevice->CreateTexture2D(&textureDesc, NULL, &c->Textures[i]);
 		c->Width = desc.Width;
 		c->Height = desc.Height;
 		c->Format = desc.Format;
-		c->UseDoubleBuffering = UseDoubleBuffering;
+		c->BufferNum = 0;
 	}
 
-	//Handle double buffer
-	if (c->UseDoubleBuffering) c->AlternativeBuffer ^= 1;
-	ID3D11Texture2D* WriteTexture = c->Textures[c->UseDoubleBuffering &&  c->AlternativeBuffer ? 1 : 0];
-	ID3D11Texture2D* ReadTexture  = c->Textures[c->UseDoubleBuffering && !c->AlternativeBuffer ? 1 : 0];
+	//Handle buffering
+	ID3D11Texture2D* WriteTexture = c->Textures[c->BufferNum];
+	ID3D11Texture2D* ReadTexture  = c->Textures[(c->BufferNum + 1) % (c->ExtraBuffers + 1)];
+	c->BufferNum = (c->BufferNum + 1) % (c->ExtraBuffers + 1);
 
 	//Check texture format
 	SharedImageMemory::EFormat Format;
