@@ -1003,10 +1003,10 @@ static const AMOVIESETUP_PIN sudCaptureSourceOut = {
 };
 
 struct WStringHolder { wchar_t str[256]; };
-__inline static WStringHolder GetCaptureSourceNameNum(int i, int MaxCapNum)
+__inline static WStringHolder GetCaptureSourceNameNum(const wchar_t* pCaptureSourceName, int i)
 {
 	WStringHolder res;
-	StringCchPrintfW(res.str, sizeof(res.str)/sizeof(*res.str), (i == 0 ? CaptureSourceName : CaptureSourceName L" #%d"), i + 1);
+	StringCchPrintfW(res.str, sizeof(res.str)/sizeof(*res.str), (i == 0 ? L"%s" : L"%s #%d"), pCaptureSourceName, i + 1);
 	return res;
 }
 
@@ -1044,18 +1044,36 @@ static HRESULT RegisterFilters(BOOL bRegister)
 	HRESULT hr = CoInitialize(0);
 
 	int MaxCapNum = (bRegister ? 1 : SharedImageMemory::MAX_CAPNUM);
+	const wchar_t* pCaptureSourceName = CaptureSourceName;
 	if (SUCCEEDED(hr) && bRegister)
 	{
-		for (int i = 0; i != __argc; i++)
+		char* CapNumParam = strstr(GetCommandLineA(), "/i:UnityCaptureDevices=");
+		if (CapNumParam) MaxCapNum = atoi(CapNumParam + sizeof("/i:UnityCaptureDevices=") - 1);
+
+		const wchar_t* CapNameParam = wcsstr(GetCommandLineW(), L"/i:UnityCaptureName=");
+		if (CapNameParam)
 		{
-			char* CapNumParam = strstr(__argv[i], "/i:UnityCaptureDevices=");
-			if (CapNumParam) MaxCapNum = atoi(CapNumParam + sizeof("/i:UnityCaptureDevices=") - 1);
+			//Parse custom filter names from /i:UnityCaptureName=NAME or "/i:UnityCaptureName=NAME NAME" or /i:UnityCaptureName="NAME NAME"
+			const wchar_t* CapNameStart = CapNameParam + sizeof("/i:UnityCaptureName=") - 1;
+			if (CapNameStart[0] == L'"') CapNameStart++;
+			const wchar_t* CapNameEnd = wcsstr(CapNameStart, (CapNameParam[-1] == L'"' || CapNameStart[-1] == L'"' ? L"\"" : L" "));
+			if (!CapNameEnd) CapNameEnd = CapNameStart + wcslen(CapNameStart);
+			size_t CapNameLen = CapNameEnd - CapNameStart;
+			if (CapNameLen > 0 && CapNameLen < 200)
+			{
+				//Allocate memory to hold the name string (this is never freed until regsvr32 ends, which is soon after this function anyway)
+				wchar_t* CustomCaptureSourceName = (wchar_t*)malloc(sizeof(wchar_t) * (CapNameLen + 1));
+				memcpy(CustomCaptureSourceName, CapNameStart, sizeof(wchar_t) * CapNameLen);
+				CustomCaptureSourceName[CapNameLen] = L'\0';
+				pCaptureSourceName = CustomCaptureSourceName;
+			}
 		}
+
 		if (MaxCapNum < 1) MaxCapNum = 1;
 		if (MaxCapNum > SharedImageMemory::MAX_CAPNUM) MaxCapNum = SharedImageMemory::MAX_CAPNUM;
 
 		for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
-			hr = AMovieSetupRegisterServer(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(i, MaxCapNum).str, achFileName, L"Both", L"InprocServer32");
+			hr = AMovieSetupRegisterServer(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(pCaptureSourceName, i).str, achFileName, L"Both", L"InprocServer32");
 		if (SUCCEEDED(hr)) hr = AMovieSetupRegisterServer(CLSID_UnityCaptureProperties, CaptureSourceName L" Configuration", achFileName, L"Both", L"InprocServer32");
 		if (FAILED(hr)) MessageBoxA(0, "AMovieSetupRegisterServer failed", "RegisterFilters setup", NULL);
 	}
@@ -1076,7 +1094,7 @@ static HRESULT RegisterFilters(BOOL bRegister)
 				rf2.rgPins = &sudCaptureSourceOut;
 				for (int i = 0; SUCCEEDED(hr) && i != MaxCapNum; i++)
 				{
-					hr = fm->RegisterFilter(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(i, MaxCapNum).str, 0, &CLSID_VideoInputDeviceCategory, NULL, &rf2);
+					hr = fm->RegisterFilter(GetCLSIDUnityCaptureServiceNum(i), GetCaptureSourceNameNum(pCaptureSourceName, i).str, 0, &CLSID_VideoInputDeviceCategory, NULL, &rf2);
 
 					//This is needed for Unity and Skype to access the virtual camera
 					//Thanks to: https://social.msdn.microsoft.com/Forums/windowsdesktop/en-US/cd2b9d2d-b961-442d-8946-fdc038fed530/where-to-specify-device-id-in-the-filter?forum=windowsdirectshowdevelopment
