@@ -67,7 +67,7 @@ struct SharedImageMemory
 	}
 
 	enum ESendResult { SENDRES_TOOLARGE, SENDRES_WARN_FRAMESKIP, SENDRES_OK };
-	ESendResult Send(int width, int height, int stride, DWORD DataSize, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, int timeout, const uint8_t* buffer)
+	ESendResult Send(int width, int height, int stride, DWORD DataSize, EFormat format, EResizeMode resizemode, EMirrorMode mirrormode, int timeout, const uint8_t* buffer, int *bufWidth, int *bufHeight)
 	{
 		UCASSERT(buffer);
 		UCASSERT(m_pSharedBuf);
@@ -87,7 +87,19 @@ struct SharedImageMemory
 		SetEvent(m_hSentFrameEvent);
 		bool DidSkipFrame = (WaitForSingleObject(m_hWantFrameEvent, 0) != WAIT_OBJECT_0);
 
+		*bufWidth = m_pSharedBuf->needWidth;
+		*bufHeight = m_pSharedBuf->needHeight;
+
 		return (DidSkipFrame ? SENDRES_WARN_FRAMESKIP : SENDRES_OK);
+	}
+
+	void SaveImageBufferSize(int needWidth, int needHeight)
+	{
+		if (m_pSharedBuf != (SharedImageMemory::SharedMemHeader*)0)
+		{
+			m_pSharedBuf->needWidth = needWidth;
+			m_pSharedBuf->needHeight = needHeight;
+		}
 	}
 
 private:
@@ -143,6 +155,7 @@ private:
 		return true;
 	}
 
+public:
 	struct SharedMemHeader
 	{
 		DWORD maxSize;
@@ -153,13 +166,20 @@ private:
 		int resizemode;
 		int mirrormode;
 		int timeout;
+
+		int needWidth;
+		int needHeight;
+
 		uint8_t data[1];
 	};
+private:
 
 	int32_t m_CapNum;
 	HANDLE m_hMutex;
 	HANDLE m_hWantFrameEvent;
 	HANDLE m_hSentFrameEvent;
 	HANDLE m_hSharedFile;
+
+public:
 	SharedMemHeader* m_pSharedBuf;
 };

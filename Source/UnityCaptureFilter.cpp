@@ -138,7 +138,18 @@ private:
 		if (FAILED(hr = pSamp->SetMediaTime(&mtStart, &mtEnd))) return hr;
 
 		ProcessState State = { pBuf, pvi->bmiHeader.biWidth, pvi->bmiHeader.biHeight, pvi->bmiHeader.biBitCount / 8, this };
-		switch (m_pReceiver->Receive((SharedImageMemory::ReceiveCallbackFunc)ProcessImage, &State))
+
+		SharedImageMemory::EReceiveResult error = m_pReceiver->Receive((SharedImageMemory::ReceiveCallbackFunc)ProcessImage, &State);
+
+		// Save the needed width and height of the image buffer.
+		//m_pReceiver->SaveImageBufferSize(State.BufWidth, State.BufHeight);
+		if (m_pReceiver->m_pSharedBuf != (SharedImageMemory::SharedMemHeader *)0)
+		{
+			m_pReceiver->m_pSharedBuf->needWidth = State.BufWidth;
+			m_pReceiver->m_pSharedBuf->needHeight = State.BufHeight;
+		}
+
+		switch (error)
 		{
 			case SharedImageMemory::RECEIVERES_CAPTUREINACTIVE:{
 				//Show color pattern indicating that Unity is not sending frame data yet

@@ -480,7 +480,7 @@ typedef struct tag_ObjectDesc {
 class CDispBasic
 {
 public:
-    CDispBasic() { m_pString = m_String; };
+   CDispBasic() { memset(m_String, 0, sizeof(m_String));  m_pString = m_String; };
     ~CDispBasic();
 protected:
     PTCHAR m_pString;  // normally points to m_String... unless too much data
@@ -1475,6 +1475,9 @@ public:
             : CBaseObject(NAME("List node"))
 #endif
         {
+           m_pPrev = (CNode *)0;
+           m_pNext = (CNode *)0;
+           m_pObject = 0;
         };
 
 

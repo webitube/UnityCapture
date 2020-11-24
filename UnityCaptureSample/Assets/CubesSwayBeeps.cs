@@ -79,8 +79,8 @@ public class CubesSwayBeeps : MonoBehaviour
         }
     }
 
-    void OnGUI()
-    {
-        GUI.Box(new Rect(20, 20, 250, 25), "Drawing in OnGUI is not captured");
-    }
+    //void OnGUI()
+    //{
+    //    GUI.Box(new Rect(20, 20, 250, 25), "Drawing in OnGUI is not captured");
+    //}
 }

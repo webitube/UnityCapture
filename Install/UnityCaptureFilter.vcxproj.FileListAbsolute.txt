@@ -1,0 +1,2 @@
+G:\Dev\github3\GlowCam\Assets\UnityCapture\Install\UnityCaptureFilter32bit.dll
+G:\Dev\github3\GlowCam\Assets\UnityCapture\Install\UnityCaptureFilter64bit.dll

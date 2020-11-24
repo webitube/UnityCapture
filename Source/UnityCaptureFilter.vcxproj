@@ -22,6 +22,7 @@
     <ProjectName>UnityCaptureFilter</ProjectName>
     <RootNamespace>UnityCaptureFilter</RootNamespace>
     <ProjectGuid>{3D0A9889-9EC1-4012-9382-4FE1EB610D28}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
@@ -35,6 +36,18 @@
     <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
     <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
   </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -42,7 +55,7 @@
   <PropertyGroup>
     <TargetName Condition="'$(Platform)'=='x64'">UnityCaptureFilter64bit</TargetName>
     <TargetName Condition="'$(Platform)'=='Win32'">UnityCaptureFilter32bit</TargetName>
-    <OutDir>Build\$(Configuration)-$(TargetName)\</OutDir>
+    <OutDir>..\Install</OutDir>
     <IntDir>$(OutDir)</IntDir>
     <GenerateManifest>false</GenerateManifest>
     <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
